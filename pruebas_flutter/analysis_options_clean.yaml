@@ -13,4 +13,3 @@ analyzer:
 linter:
   rules:
     # Reglas personalizadas si es necesario
-
