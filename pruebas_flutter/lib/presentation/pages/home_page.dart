@@ -64,7 +64,8 @@ class _HomePageState extends State<HomePage> {
                   if (connected)
                     WeightCard(
                       weight: connState.weight,
-                      battery: connState.battery,
+                      batteryVoltage: connState.batteryVoltage,
+                      batteryPercent: connState.batteryPercent,
                     )
                   else
                     Card(

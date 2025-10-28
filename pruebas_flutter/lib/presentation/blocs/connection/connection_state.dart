@@ -24,14 +24,26 @@ class Connecting extends ConnectionState {
 class Connected extends ConnectionState {
   final BtDevice device;
   final WeightReading? weight;
-  final BatteryStatus? battery;
-  const Connected({required this.device, this.weight, this.battery});
+  final BatteryStatus? batteryVoltage; // Para voltaje {BV}
+  final BatteryStatus? batteryPercent; // Para porcentaje {BC}
+  const Connected(
+      {required this.device,
+      this.weight,
+      this.batteryVoltage,
+      this.batteryPercent});
 
-  Connected copyWith({WeightReading? weight, BatteryStatus? battery}) =>
-      Connected(device: device, weight: weight ?? this.weight, battery: battery ?? this.battery);
+  Connected copyWith(
+          {WeightReading? weight,
+          BatteryStatus? batteryVoltage,
+          BatteryStatus? batteryPercent}) =>
+      Connected(
+          device: device,
+          weight: weight ?? this.weight,
+          batteryVoltage: batteryVoltage ?? this.batteryVoltage,
+          batteryPercent: batteryPercent ?? this.batteryPercent);
 
   @override
-  List<Object?> get props => [device, weight, battery];
+  List<Object?> get props => [device, weight, batteryVoltage, batteryPercent];
 }
 
 class ConnectionError extends ConnectionState {

@@ -198,49 +198,58 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final valueStr = weightMatch.group(1);
       final value = double.tryParse(valueStr ?? '');
       if (value != null) {
-        // Determinar si es peso o batería basado en comandos recientes
+        // Determinar si es peso o batería basado en comandos recientes y lógica más estricta
         final now = DateTime.now();
         final recentBV = _commandHistory['{BV}'];
         final recentBC = _commandHistory['{BC}'];
 
-        // Si enviamos {BV} hace menos de 5 segundos y el valor es < 10, es voltaje
+        print(
+            '🔍 Analizando valor [${value}] - Comandos recientes: BV=$recentBV, BC=$recentBC');
+
+        // VOLTAJE: Solo si comando {BV} reciente Y valor está en rango típico de voltajes (1.0-6.0V)
         if (recentBV != null &&
-            now.difference(recentBV).inSeconds < 5 &&
-            value < 10) {
+            now.difference(recentBV).inSeconds < 3 &&
+            value >= 1.0 &&
+            value <= 6.0) {
           print(
-              '🔋 BATERÍA VOLTAJE: ${value}V (basado en comando {BV} reciente)');
+              '🔋 BATERÍA VOLTAJE: ${value}V (comando {BV} hace ${now.difference(recentBV).inSeconds}s)');
           emit(s.copyWith(
-              battery: BatteryStatus(volts: value, at: DateTime.now())));
+              batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
           _commandHistory.remove('{BV}'); // Limpiar comando usado
           return;
         }
 
-        // Si enviamos {BC} hace menos de 5 segundos y el valor es 0-100, es porcentaje
+        // PORCENTAJE: Solo si comando {BC} reciente Y valor está en rango 0-100 Y no es peso típico
         if (recentBC != null &&
-            now.difference(recentBC).inSeconds < 5 &&
+            now.difference(recentBC).inSeconds < 3 &&
             value >= 0 &&
-            value <= 100) {
+            value <= 100 &&
+            value < 200) {
+          // Evitar confundir pesos altos con porcentajes
           print(
-              '🔋 BATERÍA PORCENTAJE: ${value}% (basado en comando {BC} reciente)');
+              '🔋 BATERÍA PORCENTAJE: ${value}% (comando {BC} hace ${now.difference(recentBC).inSeconds}s)');
           emit(s.copyWith(
-              battery: BatteryStatus(percent: value, at: DateTime.now())));
+              batteryPercent:
+                  BatteryStatus(percent: value, at: DateTime.now())));
           _commandHistory.remove('{BC}'); // Limpiar comando usado
           return;
         }
 
-        // Si no hay comandos de batería recientes, es peso
-        print('⚖️  PESO S3 (formato corchetes) DETECTADO: ${value}kg');
+        // PESO: Si no hay comandos de batería recientes o el valor no coincide con rangos de batería
+        print(
+            '⚖️  PESO S3: ${value}kg (sin comandos de batería recientes o fuera de rangos)');
         emit(s.copyWith(weight: WeightReading(kg: value, at: DateTime.now())));
         return;
       }
     }
 
-    // Detectar datos de batería
+    // Detectar datos de batería (método fallback para otros formatos)
     if (line.toUpperCase().contains('BV') || line.toUpperCase().contains('V')) {
       final v = extractFirstNumber(line);
       if (v != null) {
         print('🔋 BATERÍA VOLTAJE: ${v}V');
-        emit(s.copyWith(battery: BatteryStatus(volts: v, at: DateTime.now())));
+        emit(s.copyWith(
+            batteryVoltage: BatteryStatus(volts: v, at: DateTime.now())));
         return;
       }
     }
@@ -249,8 +258,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final p = extractFirstNumber(line);
       if (p != null) {
         print('🔋 BATERÍA PORCENTAJE: ${p}%');
-        emit(
-            s.copyWith(battery: BatteryStatus(percent: p, at: DateTime.now())));
+        emit(s.copyWith(
+            batteryPercent: BatteryStatus(percent: p, at: DateTime.now())));
         return;
       }
     }
@@ -284,6 +293,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
       // Registrar comando en el historial para tracking de respuestas
       if (e.command == '{BV}' || e.command == '{BC}') {
+        // Limpiar comandos antiguos (más de 10 segundos)
+        _cleanOldCommands();
+
         _commandHistory[e.command] = DateTime.now();
         print('📝 Comando ${e.command} registrado para tracking de respuesta');
       }
@@ -348,10 +360,14 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       print('📊 Polling tick $tick - Enviando {RW}');
       add(SendCommandRequested('{RW}'));
 
-      // Leer batería cada 10 ticks (cada 20 segundos)
-      if (tick % 10 == 0) {
-        print('🔋 Leyendo estado de batería...');
+      // Leer batería con espaciado para evitar mezclar respuestas
+      if (tick % 15 == 0) {
+        print('🔋 Leyendo voltaje de batería...');
         add(SendCommandRequested('{BV}'));
+      }
+
+      if (tick % 20 == 0) {
+        print('🔋 Leyendo porcentaje de batería...');
         add(SendCommandRequested('{BC}'));
       }
     });
@@ -397,6 +413,23 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       }
     } catch (e) {
       print('❌ Error verificando conexión manual: $e');
+    }
+  }
+
+  /// Limpiar comandos antiguos del historial (más de 10 segundos)
+  void _cleanOldCommands() {
+    final now = DateTime.now();
+    final keysToRemove = <String>[];
+
+    for (final entry in _commandHistory.entries) {
+      if (now.difference(entry.value).inSeconds > 10) {
+        keysToRemove.add(entry.key);
+      }
+    }
+
+    for (final key in keysToRemove) {
+      _commandHistory.remove(key);
+      print('🧹 Comando antiguo $key removido del historial');
     }
   }
 

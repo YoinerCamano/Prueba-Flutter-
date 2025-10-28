@@ -3,14 +3,16 @@ import '../../domain/entities.dart';
 
 class WeightCard extends StatelessWidget {
   final WeightReading? weight;
-  final BatteryStatus? battery;
-  const WeightCard({super.key, this.weight, this.battery});
+  final BatteryStatus? batteryVoltage;
+  final BatteryStatus? batteryPercent;
+  const WeightCard(
+      {super.key, this.weight, this.batteryVoltage, this.batteryPercent});
 
   @override
   Widget build(BuildContext context) {
     final w = weight?.kg;
-    final bVolt = battery?.volts;
-    final bPct = battery?.percent;
+    final bVolt = batteryVoltage?.volts;
+    final bPct = batteryPercent?.percent;
 
     return Card(
       elevation: 0,
@@ -27,28 +29,47 @@ class WeightCard extends StatelessWidget {
                 Text('Lectura de peso',
                     style: Theme.of(context).textTheme.titleLarge),
                 const Spacer(),
-                // Icono de batería con porcentaje en el header
+                // Iconos de batería separados
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _buildBatteryIcon(bPct),
-                    const SizedBox(width: 4),
-                    Text(
-                      bPct != null
-                          ? '${bPct.toStringAsFixed(0)}%'
-                          : bVolt != null
-                              ? '${bVolt.toStringAsFixed(2)}V'
-                              : 'N/D',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w500,
-                          ),
-                    ),
+                    // Icono de voltaje
+                    if (bVolt != null) ...[
+                      Icon(Icons.flash_on, color: Colors.blue, size: 20),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${bVolt.toStringAsFixed(2)}V',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w500,
+                            ),
+                      ),
+                      const SizedBox(width: 12),
+                    ],
+                    // Icono de porcentaje
+                    if (bPct != null) ...[
+                      _buildBatteryIcon(bPct),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${bPct.toStringAsFixed(0)}%',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w500,
+                            ),
+                      ),
+                    ],
+                    // Mensaje cuando no hay datos de batería
+                    if (bVolt == null && bPct == null)
+                      Text(
+                        'Sin datos de batería',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.grey,
+                            ),
+                      ),
                   ],
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            // Peso principal centrado
+            // Peso principal centrado (SOLO PESO)
             Center(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
