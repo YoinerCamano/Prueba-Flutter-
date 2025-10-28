@@ -130,145 +130,148 @@ class _HomePageState extends State<HomePage> {
                   ],
                   const SizedBox(height: 16),
 
-                  // === Lista de dispositivos disponibles ===
-                  Row(
-                    children: [
-                      Text(
-                        'Dispositivos Disponibles',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const Spacer(),
-                      TextButton.icon(
-                        onPressed: () => _checkManualConnection(),
-                        icon: const Icon(Icons.bluetooth_connected, size: 16),
-                        label: const Text('Verificar Manual'),
-                      ),
-                      const SizedBox(width: 8),
-                      TextButton.icon(
-                        onPressed: () => _runDiagnostic(),
-                        icon: const Icon(Icons.bug_report, size: 16),
-                        label: const Text('Diagnóstico'),
-                      ),
-                      const SizedBox(width: 8),
-                      TextButton(
-                        onPressed: () => context.read<ScanCubit>().loadBonded(),
-                        child: const Text('Actualizar'),
-                      ),
-                    ],
-                  ),
-                  Expanded(
-                    child: BlocBuilder<ScanCubit, ScanState>(
-                      builder: (context, scanState) {
-                        print('🎨 === UI REBUILD DISPOSITIVOS ===');
-                        print(
-                            '📊 Dispositivos vinculados: ${scanState.bonded.length}');
-                        print(
-                            '📊 Dispositivos encontrados: ${scanState.found.length}');
-                        print('🔄 Loading: ${scanState.loading}');
-                        print('❌ Error: ${scanState.error}');
-
-                        final items = <Widget>[];
-                        final deviceIds = <String>{};
-
-                        // Mostrar tanto dispositivos vinculados como encontrados
-                        // Primero dispositivos vinculados
-                        for (final d in scanState.bonded) {
-                          if (!deviceIds.contains(d.id)) {
-                            print(
-                                '🎨 Agregando vinculado: ${d.name} (${d.id})');
-                            items.add(
-                              DeviceTile(
-                                device: d,
-                                onTap: () => _connect(d),
-                              ),
-                            );
-                            items.add(const Divider(height: 1));
-                            deviceIds.add(d.id);
-                          }
-                        }
-
-                        // Luego dispositivos encontrados
-                        for (final d in scanState.found) {
-                          if (!deviceIds.contains(d.id)) {
-                            print(
-                                '🎨 Agregando encontrado: ${d.name} (${d.id})');
-                            items.add(
-                              DeviceTile(
-                                device: d,
-                                onTap: () => _connect(d),
-                              ),
-                            );
-                            items.add(const Divider(height: 1));
-                            deviceIds.add(d.id);
-                          }
-                        }
-
-                        if (items.isEmpty) {
-                          print('⚠️ UI: Lista vacía, mostrando mensaje');
-                          items.add(
-                            ListTile(
-                              title: Text(
-                                'No hay dispositivos disponibles. Usa el botón de búsqueda para encontrar básculas.',
-                              ),
-                            ),
-                          );
-                        } else {
+                  // === Lista de dispositivos disponibles (solo si NO está conectado) ===
+                  if (!connected) ...[
+                    Row(
+                      children: [
+                        Text(
+                          'Dispositivos Disponibles',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const Spacer(),
+                        TextButton.icon(
+                          onPressed: () => _checkManualConnection(),
+                          icon: const Icon(Icons.bluetooth_connected, size: 16),
+                          label: const Text('Verificar Manual'),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          onPressed: () => _runDiagnostic(),
+                          icon: const Icon(Icons.bug_report, size: 16),
+                          label: const Text('Diagnóstico'),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton(
+                          onPressed: () =>
+                              context.read<ScanCubit>().loadBonded(),
+                          child: const Text('Actualizar'),
+                        ),
+                      ],
+                    ),
+                    Expanded(
+                      child: BlocBuilder<ScanCubit, ScanState>(
+                        builder: (context, scanState) {
+                          print('🎨 === UI REBUILD DISPOSITIVOS ===');
                           print(
-                              '✅ UI: Mostrando ${items.length ~/ 2} dispositivos');
-                        }
+                              '📊 Dispositivos vinculados: ${scanState.bonded.length}');
+                          print(
+                              '📊 Dispositivos encontrados: ${scanState.found.length}');
+                          print('🔄 Loading: ${scanState.loading}');
+                          print('❌ Error: ${scanState.error}');
 
-                        return ListView(children: items);
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 8),
+                          final items = <Widget>[];
+                          final deviceIds = <String>{};
 
-                  // === Lista de dispositivos cercanos ===
-                  Row(
-                    children: [
-                      Text(
-                        'Dispositivos Cercanos',
-                        style: Theme.of(context).textTheme.titleMedium,
+                          // Mostrar tanto dispositivos vinculados como encontrados
+                          // Primero dispositivos vinculados
+                          for (final d in scanState.bonded) {
+                            if (!deviceIds.contains(d.id)) {
+                              print(
+                                  '🎨 Agregando vinculado: ${d.name} (${d.id})');
+                              items.add(
+                                DeviceTile(
+                                  device: d,
+                                  onTap: () => _connect(d),
+                                ),
+                              );
+                              items.add(const Divider(height: 1));
+                              deviceIds.add(d.id);
+                            }
+                          }
+
+                          // Luego dispositivos encontrados
+                          for (final d in scanState.found) {
+                            if (!deviceIds.contains(d.id)) {
+                              print(
+                                  '🎨 Agregando encontrado: ${d.name} (${d.id})');
+                              items.add(
+                                DeviceTile(
+                                  device: d,
+                                  onTap: () => _connect(d),
+                                ),
+                              );
+                              items.add(const Divider(height: 1));
+                              deviceIds.add(d.id);
+                            }
+                          }
+
+                          if (items.isEmpty) {
+                            print('⚠️ UI: Lista vacía, mostrando mensaje');
+                            items.add(
+                              ListTile(
+                                title: Text(
+                                  'No hay dispositivos disponibles. Usa el botón de búsqueda para encontrar básculas.',
+                                ),
+                              ),
+                            );
+                          } else {
+                            print(
+                                '✅ UI: Mostrando ${items.length ~/ 2} dispositivos');
+                          }
+
+                          return ListView(children: items);
+                        },
                       ),
-                      const Spacer(),
-                      BlocBuilder<ScanCubit, ScanState>(
-                        builder: (_, s) => s.scanning
-                            ? Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  const Text('Escaneando dispositivos...'),
-                                ],
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                    ],
-                  ),
-                  SizedBox(
-                    height: 170,
-                    child: BlocBuilder<ScanCubit, ScanState>(
-                      builder: (context, scanState) {
-                        final items = <Widget>[];
-                        for (final d in scanState.found) {
-                          items.add(
-                            DeviceTile(
-                              device: d,
-                              onTap: () => _connect(d),
-                            ),
-                          );
-                          items.add(const Divider(height: 1));
-                        }
-                        return ListView(children: items);
-                      },
                     ),
-                  ),
-                  const SizedBox(height: 12),
+                    const SizedBox(height: 8),
+
+                    // === Lista de dispositivos cercanos ===
+                    Row(
+                      children: [
+                        Text(
+                          'Dispositivos Cercanos',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const Spacer(),
+                        BlocBuilder<ScanCubit, ScanState>(
+                          builder: (_, s) => s.scanning
+                              ? Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text('Escaneando dispositivos...'),
+                                  ],
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ],
+                    ),
+                    SizedBox(
+                      height: 170,
+                      child: BlocBuilder<ScanCubit, ScanState>(
+                        builder: (context, scanState) {
+                          final items = <Widget>[];
+                          for (final d in scanState.found) {
+                            items.add(
+                              DeviceTile(
+                                device: d,
+                                onTap: () => _connect(d),
+                              ),
+                            );
+                            items.add(const Divider(height: 1));
+                          }
+                          return ListView(children: items);
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
 
                   // === Botones de control ===
                   Row(

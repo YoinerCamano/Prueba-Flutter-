@@ -13,6 +13,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
 
+  // Track del último comando enviado para interpretar respuestas
+  String? _lastCommand;
+  final Map<String, DateTime> _commandHistory = {};
+
   ConnectionBloc(this.repo) : super(const ConnectionState.disconnected()) {
     on<ConnectRequested>(_onConnect);
     on<DisconnectRequested>(_onDisconnect);
@@ -186,15 +190,47 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     // Detectar datos de peso específicos para Tru-Test S3 (formato original)
     // Formato esperado: [peso] ej: [0.00], [23.45], etc.
+    // También maneja respuestas de batería basadas en comandos recientes
     final weightRegex = RegExp(r'\[(\d+\.?\d*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
     if (weightMatch != null) {
-      final weightStr = weightMatch.group(1);
-      final weight = double.tryParse(weightStr ?? '');
-      if (weight != null) {
-        print('⚖️  PESO S3 (formato corchetes) DETECTADO: ${weight}kg');
-        emit(s.copyWith(weight: WeightReading(kg: weight, at: DateTime.now())));
+      final valueStr = weightMatch.group(1);
+      final value = double.tryParse(valueStr ?? '');
+      if (value != null) {
+        // Determinar si es peso o batería basado en comandos recientes
+        final now = DateTime.now();
+        final recentBV = _commandHistory['{BV}'];
+        final recentBC = _commandHistory['{BC}'];
+
+        // Si enviamos {BV} hace menos de 5 segundos y el valor es < 10, es voltaje
+        if (recentBV != null &&
+            now.difference(recentBV).inSeconds < 5 &&
+            value < 10) {
+          print(
+              '🔋 BATERÍA VOLTAJE: ${value}V (basado en comando {BV} reciente)');
+          emit(s.copyWith(
+              battery: BatteryStatus(volts: value, at: DateTime.now())));
+          _commandHistory.remove('{BV}'); // Limpiar comando usado
+          return;
+        }
+
+        // Si enviamos {BC} hace menos de 5 segundos y el valor es 0-100, es porcentaje
+        if (recentBC != null &&
+            now.difference(recentBC).inSeconds < 5 &&
+            value >= 0 &&
+            value <= 100) {
+          print(
+              '🔋 BATERÍA PORCENTAJE: ${value}% (basado en comando {BC} reciente)');
+          emit(s.copyWith(
+              battery: BatteryStatus(percent: value, at: DateTime.now())));
+          _commandHistory.remove('{BC}'); // Limpiar comando usado
+          return;
+        }
+
+        // Si no hay comandos de batería recientes, es peso
+        print('⚖️  PESO S3 (formato corchetes) DETECTADO: ${value}kg');
+        emit(s.copyWith(weight: WeightReading(kg: value, at: DateTime.now())));
         return;
       }
     }
@@ -245,6 +281,13 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       }
 
       print('📤 Enviando comando: ${e.command}');
+
+      // Registrar comando en el historial para tracking de respuestas
+      if (e.command == '{BV}' || e.command == '{BC}') {
+        _commandHistory[e.command] = DateTime.now();
+        print('📝 Comando ${e.command} registrado para tracking de respuesta');
+      }
+
       await repo.sendCommand(e.command);
       print('✅ Comando enviado exitosamente');
     } catch (err) {
