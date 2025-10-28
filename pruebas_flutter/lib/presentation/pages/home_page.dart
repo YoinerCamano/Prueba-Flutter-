@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../core/bluetooth_debug.dart';
 import '../../domain/entities.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
@@ -43,10 +44,47 @@ class _HomePageState extends State<HomePage> {
             selected: {_mode},
             onSelectionChanged: (s) => setState(() => _mode = s.first),
           ),
-          IconButton(
-            tooltip: 'Escanear',
-            onPressed: () => context.read<ScanCubit>().scan(mode: _mode),
+          PopupMenuButton<String>(
             icon: const Icon(Icons.search),
+            tooltip: 'Opciones de escaneo',
+            onSelected: (value) {
+              switch (value) {
+                case 'scan_current':
+                  context.read<ScanCubit>().scan(mode: _mode);
+                  break;
+                case 'scan_unified':
+                  context.read<ScanCubit>().scanUnified();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'scan_current',
+                child: Row(
+                  children: [
+                    Icon(
+                      _mode == TransportMode.spp
+                          ? Icons.bluetooth
+                          : Icons.bluetooth_connected,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                        'Escanear ${_mode == TransportMode.spp ? 'Clásico' : 'BLE'}'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'scan_unified',
+                child: Row(
+                  children: [
+                    Icon(Icons.radar, size: 20),
+                    SizedBox(width: 8),
+                    Text('Escaneo Completo (30s)'),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -107,6 +145,12 @@ class _HomePageState extends State<HomePage> {
                           onPressed: () => _checkManualConnection(),
                           icon: const Icon(Icons.bluetooth_connected, size: 16),
                           label: const Text('Verificar Manual'),
+                        ),
+                        const SizedBox(width: 8),
+                        TextButton.icon(
+                          onPressed: () => _runDiagnostic(),
+                          icon: const Icon(Icons.bug_report, size: 16),
+                          label: const Text('Diagnóstico'),
                         ),
                         const SizedBox(width: 8),
                         TextButton(
@@ -170,7 +214,19 @@ class _HomePageState extends State<HomePage> {
                       const Spacer(),
                       BlocBuilder<ScanCubit, ScanState>(
                         builder: (_, s) => s.scanning
-                            ? const Text('Escaneando...')
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  const Text('Escaneando dispositivos...'),
+                                ],
+                              )
                             : const SizedBox.shrink(),
                       ),
                     ],
@@ -246,6 +302,33 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
+  }
+
+  void _runDiagnostic() async {
+    print('🔍 === EJECUTANDO DIAGNÓSTICO DESDE UI ===');
+
+    // Mostrar indicador de progreso
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+            '🔍 Ejecutando diagnóstico Bluetooth... Revisa la consola para detalles.'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+
+    // Ejecutar diagnóstico en background
+    await BluetoothDebug.runFullDiagnostic();
+
+    // Mostrar resultado
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              '✅ Diagnóstico completado. Revisa la consola para los resultados.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   void _connect(BtDevice d) {

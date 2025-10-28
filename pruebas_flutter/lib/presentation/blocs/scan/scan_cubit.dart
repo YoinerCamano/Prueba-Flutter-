@@ -49,7 +49,8 @@ class ScanCubit extends Cubit<ScanState> {
     emit(state.copyWith(scanning: true, error: null));
 
     try {
-      final found = await _repo(mode).scanNearby();
+      final found =
+          await _repo(mode).scanNearby(timeout: const Duration(seconds: 15));
       print('📊 Dispositivos encontrados en escaneo: ${found.length}');
 
       for (int i = 0; i < found.length; i++) {
@@ -61,6 +62,106 @@ class ScanCubit extends Cubit<ScanState> {
       print('✅ Escaneo completado');
     } catch (e) {
       print('❌ Error en escaneo: $e');
+      emit(state.copyWith(scanning: false, error: e.toString()));
+    }
+  }
+
+  /// Escaneo unificado que combina SPP y BLE en un solo proceso
+  Future<void> scanUnified() async {
+    print('🔍 === INICIANDO ESCANEO UNIFICADO (SPP + BLE) ===');
+    print('⏱️ Tiempo total: 30 segundos (15s SPP + 15s BLE)');
+
+    emit(state.copyWith(scanning: true, error: null));
+
+    try {
+      final List<BtDevice> allDevices = [];
+      final Set<String> deviceIds = {}; // Para evitar duplicados
+
+      // Fase 1: Escaneo SPP (Bluetooth Clásico)
+      print('📡 Fase 1: Escaneando dispositivos SPP...');
+      try {
+        final sppDevices =
+            await sppRepo.scanNearby(timeout: const Duration(seconds: 15));
+        print('📊 Dispositivos SPP encontrados: ${sppDevices.length}');
+
+        for (final device in sppDevices) {
+          if (!deviceIds.contains(device.id)) {
+            allDevices.add(device);
+            deviceIds.add(device.id);
+            print('🔹 SPP: ${device.name} (${device.id})');
+
+            // Verificar S3 específicamente
+            if (device.id.toUpperCase().contains('DE:FD:76:A4:D7:ED') ||
+                device.name.contains('S3') ||
+                device.name.contains('680066')) {
+              print('⚖️ *** BÁSCULA S3 ENCONTRADA VIA SPP ***');
+            }
+          }
+        }
+      } catch (e) {
+        print('❌ Error en escaneo SPP: $e');
+      }
+
+      // Pequeña pausa entre escaneos
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // Fase 2: Escaneo BLE
+      print('📡 Fase 2: Escaneando dispositivos BLE...');
+      try {
+        final bleDevices =
+            await bleRepo.scanNearby(timeout: const Duration(seconds: 15));
+        print('📊 Dispositivos BLE encontrados: ${bleDevices.length}');
+
+        for (final device in bleDevices) {
+          if (!deviceIds.contains(device.id)) {
+            allDevices.add(device);
+            deviceIds.add(device.id);
+            print('🔹 BLE: ${device.name} (${device.id})');
+
+            // Verificar S3 específicamente
+            if (device.id.toUpperCase().contains('DE:FD:76:A4:D7:ED') ||
+                device.name.contains('S3') ||
+                device.name.contains('680066')) {
+              print('⚖️ *** BÁSCULA S3 ENCONTRADA VIA BLE ***');
+            }
+          } else {
+            print(
+                '🔄 Dispositivo ya encontrado por SPP: ${device.name} (${device.id})');
+          }
+        }
+      } catch (e) {
+        print('❌ Error en escaneo BLE: $e');
+      }
+
+      // Resumen final
+      print('📊 === RESUMEN ESCANEO UNIFICADO ===');
+      print('🔸 Total dispositivos únicos: ${allDevices.length}');
+
+      // Buscar específicamente la S3
+      final s3Devices = allDevices
+          .where((d) =>
+              d.id.toUpperCase().contains('DE:FD:76:A4:D7:ED') ||
+              d.name.contains('S3') ||
+              d.name.contains('680066'))
+          .toList();
+
+      if (s3Devices.isNotEmpty) {
+        print('⚖️ === BÁSCULAS S3 DETECTADAS ===');
+        for (int i = 0; i < s3Devices.length; i++) {
+          print('⚖️ [$i] ${s3Devices[i].name} (${s3Devices[i].id})');
+        }
+      } else {
+        print('❌ No se encontraron básculas S3');
+        print('💡 Consejos:');
+        print('   - Asegúrese de que la S3 esté encendida');
+        print('   - Mantenga la S3 cerca del dispositivo (< 5 metros)');
+        print('   - Verifique que no esté conectada a otro dispositivo');
+      }
+
+      emit(state.copyWith(scanning: false, found: allDevices));
+      print('✅ Escaneo unificado completado');
+    } catch (e) {
+      print('❌ Error en escaneo unificado: $e');
       emit(state.copyWith(scanning: false, error: e.toString()));
     }
   }

@@ -23,6 +23,7 @@ Future<void> _ensurePermissions() async {
     Permission.bluetoothScan,
     Permission.bluetooth,
     Permission.locationWhenInUse,
+    Permission.location, // Agregar ubicación general
   ];
 
   bool allGranted = true;
@@ -57,7 +58,16 @@ Future<void> _ensurePermissions() async {
     print('⚠️  ALGUNOS PERMISOS NO FUERON CONCEDIDOS');
     print('La funcionalidad de Bluetooth puede estar limitada.');
   } else {
-    print('✓ TODOS LOS PERMISOS DE BLUETOOTH CONCEDIDOS');
+    print('✅ TODOS LOS PERMISOS DE BLUETOOTH CONCEDIDOS');
+  }
+
+  // Verificar estado de Bluetooth
+  try {
+    print('=== VERIFICANDO ESTADO DE BLUETOOTH ===');
+    final bluetoothState = await Permission.bluetooth.serviceStatus;
+    print('Estado del servicio Bluetooth: $bluetoothState');
+  } catch (e) {
+    print('Error verificando estado de Bluetooth: $e');
   }
 }
 
@@ -67,8 +77,8 @@ void main() async {
 
   final BluetoothRepository sppRepo =
       BluetoothRepositorySpp(BluetoothAdapterSpp());
-  final BluetoothRepository bleRepo =
-      BluetoothRepositoryBle(BleAdapter()); // UART NUS por defecto
+  final BluetoothRepository bleRepo = BluetoothRepositoryBle(BleAdapter(
+      config: BleUartConfig.truTest())); // Configuración específica para S3
 
   runApp(MyApp(sppRepo: sppRepo, bleRepo: bleRepo));
 }
@@ -101,7 +111,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// Decide SPP o BLE por formato del ID (MAC con ":" = SPP; otro = BLE)
+/// Decide SPP o BLE - Tru-Test S3 es BLE aunque tenga formato MAC
 class _BridgeRepository implements BluetoothRepository {
   final BluetoothRepository spp;
   final BluetoothRepository ble;
@@ -109,7 +119,15 @@ class _BridgeRepository implements BluetoothRepository {
 
   _BridgeRepository(this.spp, this.ble);
 
-  BluetoothRepository _pick(String id) => id.contains(':') ? spp : ble;
+  BluetoothRepository _pick(String id) {
+    // Tru-Test S3 es BLE aunque tenga formato MAC
+    if (id.toUpperCase().contains('DE:FD:76:A4:D7:ED')) {
+      print('🎯 Detectada S3 - usando BLE');
+      return ble;
+    }
+    // Resto de dispositivos por formato
+    return id.contains(':') ? spp : ble;
+  }
 
   @override
   Future<List<BtDevice>> bondedDevices() => spp.bondedDevices();

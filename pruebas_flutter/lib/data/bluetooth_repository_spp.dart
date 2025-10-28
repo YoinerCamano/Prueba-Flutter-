@@ -94,56 +94,127 @@ class BluetoothAdapterSpp {
       await disconnect();
 
       print('🔍 Cancelando discovery múltiples veces...');
-      for (int i = 0; i < 5; i++) {
+      for (int i = 0; i < 3; i++) {
         try {
           await _bt.cancelDiscovery();
-          await Future.delayed(const Duration(milliseconds: 500));
-          print('  Discovery cancelado ${i + 1}/5');
+          await Future.delayed(const Duration(milliseconds: 300));
+          print('  Discovery cancelado ${i + 1}/3');
         } catch (e) {
           print('  Error cancelando discovery ${i + 1}: $e');
         }
       }
 
-      // Espera larga específica para S3
-      print('⏳ Esperando estabilización S3 (5 segundos)...');
-      await Future.delayed(const Duration(milliseconds: 5000));
+      // ESTRATEGIA MÚLTIPLE DE CONEXIÓN
+      BluetoothConnection? conn;
+      Exception? lastError;
 
-      print('📡 Iniciando conexión RFCOMM para S3...');
-      print('📱 Conectando a dirección: $address');
-
-      BluetoothConnection conn;
+      // INTENTO 1: Conexión directa rápida
+      print('');
+      print('🚀 === INTENTO 1: CONEXIÓN DIRECTA ===');
       try {
-        print('🔄 Intentando BluetoothConnection.toAddress...');
-        conn = await BluetoothConnection.toAddress(address);
+        print('⏳ Pausa corta (1 segundo)...');
+        await Future.delayed(const Duration(milliseconds: 1000));
 
-        print('🔗 Objeto de conexión creado');
-        _connection = conn;
+        print('� Intentando conexión directa...');
+        conn = await BluetoothConnection.toAddress(address).timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => throw TimeoutException(
+              'Timeout en conexión directa', const Duration(seconds: 8)),
+        );
 
-        // Verificar inmediatamente el estado
-        final isConnected = conn.isConnected;
-        print('📊 Estado inmediato del socket: $isConnected');
-
-        if (!isConnected) {
-          throw Exception('Socket creado pero no está conectado');
+        if (conn.isConnected) {
+          print('✅ INTENTO 1 EXITOSO: Conexión directa establecida');
+        } else {
+          throw Exception('Socket creado pero no conectado');
         }
-
-        print('✅ CONEXIÓN RFCOMM ESTABLECIDA EXITOSAMENTE');
-      } catch (connectionError) {
-        print('');
-        print('❌ *** ERROR EN CONEXIÓN RFCOMM ***');
-        print('� Error específico: $connectionError');
-        print('🔍 Tipo de error: ${connectionError.runtimeType}');
-        print('');
-
-        // Re-lanzar con información adicional
-        throw Exception('Error conectando vía RFCOMM: $connectionError\n\n'
-            'Posibles causas:\n'
-            '1. S3 no está en modo emparejamiento\n'
-            '2. Interferencia Bluetooth\n'
-            '3. S3 ya conectada a otro dispositivo\n'
-            '4. Problema de permisos Android\n'
-            '5. S3 necesita reinicio (apagar/encender)');
+      } catch (e) {
+        print('❌ INTENTO 1 FALLÓ: $e');
+        lastError = e is Exception ? e : Exception(e.toString());
+        await conn?.finish();
+        conn = null;
       }
+
+      // INTENTO 2: Conexión con pausa larga
+      if (conn == null) {
+        print('');
+        print('� === INTENTO 2: CONEXIÓN CON PAUSA LARGA ===');
+        try {
+          print('⏳ Pausa larga para estabilización (8 segundos)...');
+          await Future.delayed(const Duration(milliseconds: 8000));
+
+          print('🔄 Intentando conexión con timeout extendido...');
+          conn = await BluetoothConnection.toAddress(address).timeout(
+            const Duration(seconds: 15),
+            onTimeout: () => throw TimeoutException(
+                'Timeout en conexión extendida', const Duration(seconds: 15)),
+          );
+
+          if (conn.isConnected) {
+            print('✅ INTENTO 2 EXITOSO: Conexión con pausa larga establecida');
+          } else {
+            throw Exception('Socket creado pero no conectado en intento 2');
+          }
+        } catch (e) {
+          print('❌ INTENTO 2 FALLÓ: $e');
+          lastError = e is Exception ? e : Exception(e.toString());
+          await conn?.finish();
+          conn = null;
+        }
+      }
+
+      // INTENTO 3: Reconexión con reset de adaptador
+      if (conn == null) {
+        print('');
+        print('🚀 === INTENTO 3: RECONEXIÓN CON RESET ===');
+        try {
+          print('🔄 Deshabilitando Bluetooth temporalmente...');
+          try {
+            await _bt.requestDisable();
+            await Future.delayed(const Duration(milliseconds: 3000));
+          } catch (e) {
+            print('⚠️ No se pudo deshabilitar BT: $e');
+          }
+
+          print('🔄 Reactivando Bluetooth...');
+          await ensureOn();
+          await Future.delayed(const Duration(milliseconds: 5000));
+
+          print('� Intentando conexión después del reset...');
+          conn = await BluetoothConnection.toAddress(address).timeout(
+            const Duration(seconds: 12),
+            onTimeout: () => throw TimeoutException(
+                'Timeout después del reset', const Duration(seconds: 12)),
+          );
+
+          if (conn.isConnected) {
+            print(
+                '✅ INTENTO 3 EXITOSO: Conexión después del reset establecida');
+          } else {
+            throw Exception('Socket creado pero no conectado en intento 3');
+          }
+        } catch (e) {
+          print('❌ INTENTO 3 FALLÓ: $e');
+          lastError = e is Exception ? e : Exception(e.toString());
+          await conn?.finish();
+          conn = null;
+        }
+      }
+
+      // Verificar si algún intento fue exitoso
+      if (conn == null) {
+        print('');
+        print('❌ *** TODOS LOS INTENTOS FALLARON ***');
+        throw Exception('No se pudo conectar después de 3 intentos.\n\n'
+            'Último error: $lastError\n\n'
+            'Soluciones:\n'
+            '1. Reinicia la báscula S3 (apagar/encender)\n'
+            '2. Ve a Configuración > Bluetooth > S3 > Olvidar dispositivo\n'
+            '3. Vuelve a emparejar la S3\n'
+            '4. Asegúrate de que la S3 no esté conectada a otro dispositivo\n'
+            '5. Mantén la S3 cerca del celular (< 1 metro)');
+      }
+
+      _connection = conn;
 
       // Configurar escucha con parámetros específicos para S3
       print('🎧 Configurando listener de datos S3...');
@@ -257,19 +328,44 @@ class BluetoothRepositorySpp implements BluetoothRepository {
     try {
       await adapter.ensureOn();
 
+      // Verificar estado inicial de discovery
+      print('🔍 Verificando estado de discovery...');
+      try {
+        final isDiscovering = await adapter._bt.isDiscovering;
+        print('Discovery activo: $isDiscovering');
+        if (isDiscovering == true) {
+          print('⏹️ Cancelando discovery previo...');
+          await adapter._bt.cancelDiscovery();
+          await Future.delayed(const Duration(milliseconds: 1000));
+        }
+      } catch (e) {
+        print('Error verificando discovery: $e');
+      }
+
       // Intentar discovery real por un tiempo limitado
       print('🚀 Iniciando discovery...');
-      await adapter._bt.startDiscovery();
-      await Future.delayed(Duration(seconds: 3)); // Escanear por 3 segundos
-
       try {
-        await adapter._bt.cancelDiscovery();
-        print('✅ Discovery cancelado');
+        final started = await adapter._bt.startDiscovery();
+        print('Discovery iniciado: $started');
+
+        if (started == true) {
+          final discoveryTime = Duration(
+              seconds: (timeout.inSeconds * 0.6)
+                  .round()); // 60% del tiempo para discovery
+          print('⏳ Escaneando por ${discoveryTime.inSeconds} segundos...');
+          await Future.delayed(discoveryTime);
+
+          print('⏹️ Deteniendo discovery...');
+          await adapter._bt.cancelDiscovery();
+          print('✅ Discovery detenido');
+        } else {
+          print('❌ No se pudo iniciar discovery');
+        }
       } catch (e) {
-        print('⚠️ Error cancelando discovery: $e');
+        print('❌ Error en discovery: $e');
       }
     } catch (e) {
-      print('❌ Error en discovery: $e');
+      print('❌ Error general en escaneo: $e');
     }
 
     // Obtener todos los dispositivos emparejados (discovery puede encontrar más)
@@ -296,6 +392,8 @@ class BluetoothRepositorySpp implements BluetoothRepository {
       }
     } else {
       print('⚠️ No se encontraron dispositivos S3 específicos');
+      print(
+          '💡 Verifique que la báscula esté emparejada en Configuración de Android');
     }
 
     // Retornar TODOS los dispositivos emparejados, no solo S3
