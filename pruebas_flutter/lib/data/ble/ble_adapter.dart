@@ -40,7 +40,7 @@ class BleAdapter {
       : config = config ?? BleUartConfig.nordic();
 
   Future<List<DiscoveredDevice>> scan(
-      {Duration timeout = const Duration(seconds: 15)}) async {
+      {Duration timeout = const Duration(seconds: 8)}) async {
     final devices = <String, DiscoveredDevice>{};
     final c = Completer<void>();
     final sub = _ble
@@ -59,7 +59,7 @@ class BleAdapter {
 
     await for (final update in _ble.connectToDevice(
       id: deviceId,
-      connectionTimeout: const Duration(seconds: 20),
+      connectionTimeout: const Duration(seconds: 10),
     )) {
       if (update.connectionState == DeviceConnectionState.connected) {
         print('✅ Dispositivo BLE conectado');
@@ -276,7 +276,7 @@ class BleAdapter {
               _controller.add('__ERROR__: $e');
 
               // Intentar reestablecer notificaciones después de un delay
-              Future.delayed(const Duration(seconds: 5), () {
+              Future.delayed(const Duration(seconds: 2), () {
                 _attemptNotificationReconnect();
               });
             }, onDone: () {

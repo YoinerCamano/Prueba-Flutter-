@@ -137,4 +137,12 @@ class ScanCubit extends Cubit<ScanState> {
       emit(state.copyWith(scanning: false, error: e.toString()));
     }
   }
+
+  /// Detener el escaneo activo
+  void stopScanning() {
+    if (state.scanning) {
+      print('🛑 Deteniendo escaneo activo...');
+      emit(state.copyWith(scanning: false));
+    }
+  }
 }

@@ -46,6 +46,12 @@ class _HomePageState extends State<HomePage> {
               ScaffoldMessenger.of(context)
                   .showSnackBar(SnackBar(content: Text(state.message)));
             }
+
+            // Detener escaneo cuando se conecta exitosamente
+            if (state is conn.Connected) {
+              context.read<ScanCubit>().stopScanning();
+              print('🛑 Escaneo detenido - dispositivo conectado');
+            }
           },
           builder: (context, connState) {
             final connected = connState is conn.Connected;
