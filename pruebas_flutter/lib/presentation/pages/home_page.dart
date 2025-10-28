@@ -8,8 +8,6 @@ import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 
-enum TransportMode { spp, ble }
-
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -18,8 +16,6 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  TransportMode _mode = TransportMode.spp;
-
   @override
   void initState() {
     super.initState();
@@ -36,55 +32,10 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Básculas – Monitor'),
         actions: [
-          SegmentedButton<TransportMode>(
-            segments: const [
-              ButtonSegment(value: TransportMode.spp, label: Text('Clásico')),
-              ButtonSegment(value: TransportMode.ble, label: Text('BLE')),
-            ],
-            selected: {_mode},
-            onSelectionChanged: (s) => setState(() => _mode = s.first),
-          ),
-          PopupMenuButton<String>(
+          IconButton(
+            tooltip: 'Buscar dispositivos',
+            onPressed: () => context.read<ScanCubit>().scanUnified(),
             icon: const Icon(Icons.search),
-            tooltip: 'Opciones de escaneo',
-            onSelected: (value) {
-              switch (value) {
-                case 'scan_current':
-                  context.read<ScanCubit>().scan(mode: _mode);
-                  break;
-                case 'scan_unified':
-                  context.read<ScanCubit>().scanUnified();
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'scan_current',
-                child: Row(
-                  children: [
-                    Icon(
-                      _mode == TransportMode.spp
-                          ? Icons.bluetooth
-                          : Icons.bluetooth_connected,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                        'Escanear ${_mode == TransportMode.spp ? 'Clásico' : 'BLE'}'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'scan_unified',
-                child: Row(
-                  children: [
-                    Icon(Icons.radar, size: 20),
-                    SizedBox(width: 8),
-                    Text('Escaneo Completo (30s)'),
-                  ],
-                ),
-              ),
-            ],
           ),
         ],
       ),
@@ -130,49 +81,95 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ),
                     ),
+
+                  // === Botones de comando manual (solo si está conectado) ===
+                  if (connected) ...[
+                    const SizedBox(height: 8),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Comandos de Prueba',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              children: [
+                                ElevatedButton.icon(
+                                  onPressed: () => _sendCommand('{RW}'),
+                                  icon: const Icon(Icons.scale, size: 16),
+                                  label: const Text('Peso'),
+                                ),
+                                ElevatedButton.icon(
+                                  onPressed: () => _sendCommand('{BV}'),
+                                  icon: const Icon(Icons.battery_std, size: 16),
+                                  label: const Text('Batería'),
+                                ),
+                                ElevatedButton.icon(
+                                  onPressed: () => _sendCommand('{BC}'),
+                                  icon: const Icon(Icons.battery_charging_full,
+                                      size: 16),
+                                  label: const Text('Carga'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 16),
 
-                  // === Lista de vinculados (solo en modo Clásico) ===
-                  if (_mode == TransportMode.spp) ...[
-                    Row(
-                      children: [
-                        Text(
-                          'Vinculados (Clásico)',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        TextButton.icon(
-                          onPressed: () => _checkManualConnection(),
-                          icon: const Icon(Icons.bluetooth_connected, size: 16),
-                          label: const Text('Verificar Manual'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
-                          onPressed: () => _runDiagnostic(),
-                          icon: const Icon(Icons.bug_report, size: 16),
-                          label: const Text('Diagnóstico'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          onPressed: () =>
-                              context.read<ScanCubit>().loadBonded(),
-                          child: const Text('Actualizar'),
-                        ),
-                      ],
-                    ),
-                    Expanded(
-                      child: BlocBuilder<ScanCubit, ScanState>(
-                        builder: (context, scanState) {
-                          print(
-                              '🎨 === UI REBUILD DISPOSITIVOS VINCULADOS ===');
-                          print(
-                              '📊 Dispositivos en estado: ${scanState.bonded.length}');
-                          print('🔄 Loading: ${scanState.loading}');
-                          print('❌ Error: ${scanState.error}');
+                  // === Lista de dispositivos disponibles ===
+                  Row(
+                    children: [
+                      Text(
+                        'Dispositivos Disponibles',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () => _checkManualConnection(),
+                        icon: const Icon(Icons.bluetooth_connected, size: 16),
+                        label: const Text('Verificar Manual'),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: () => _runDiagnostic(),
+                        icon: const Icon(Icons.bug_report, size: 16),
+                        label: const Text('Diagnóstico'),
+                      ),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: () => context.read<ScanCubit>().loadBonded(),
+                        child: const Text('Actualizar'),
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    child: BlocBuilder<ScanCubit, ScanState>(
+                      builder: (context, scanState) {
+                        print('🎨 === UI REBUILD DISPOSITIVOS ===');
+                        print(
+                            '📊 Dispositivos vinculados: ${scanState.bonded.length}');
+                        print(
+                            '📊 Dispositivos encontrados: ${scanState.found.length}');
+                        print('🔄 Loading: ${scanState.loading}');
+                        print('❌ Error: ${scanState.error}');
 
-                          final items = <Widget>[];
-                          for (final d in scanState.bonded) {
-                            print('🎨 Agregando a UI: ${d.name} (${d.id})');
+                        final items = <Widget>[];
+                        final deviceIds = <String>{};
+
+                        // Mostrar tanto dispositivos vinculados como encontrados
+                        // Primero dispositivos vinculados
+                        for (final d in scanState.bonded) {
+                          if (!deviceIds.contains(d.id)) {
+                            print(
+                                '🎨 Agregando vinculado: ${d.name} (${d.id})');
                             items.add(
                               DeviceTile(
                                 device: d,
@@ -180,35 +177,51 @@ class _HomePageState extends State<HomePage> {
                               ),
                             );
                             items.add(const Divider(height: 1));
+                            deviceIds.add(d.id);
                           }
+                        }
 
-                          if (items.isEmpty) {
-                            print('⚠️ UI: Lista vacía, mostrando mensaje');
+                        // Luego dispositivos encontrados
+                        for (final d in scanState.found) {
+                          if (!deviceIds.contains(d.id)) {
+                            print(
+                                '🎨 Agregando encontrado: ${d.name} (${d.id})');
                             items.add(
-                              const ListTile(
-                                title: Text(
-                                  'No hay dispositivos emparejados. '
-                                  'Empareja la S3 en Ajustes del sistema.',
-                                ),
+                              DeviceTile(
+                                device: d,
+                                onTap: () => _connect(d),
                               ),
                             );
-                          } else {
-                            print(
-                                '✅ UI: Mostrando ${items.length ~/ 2} dispositivos');
+                            items.add(const Divider(height: 1));
+                            deviceIds.add(d.id);
                           }
+                        }
 
-                          return ListView(children: items);
-                        },
-                      ),
+                        if (items.isEmpty) {
+                          print('⚠️ UI: Lista vacía, mostrando mensaje');
+                          items.add(
+                            ListTile(
+                              title: Text(
+                                'No hay dispositivos disponibles. Usa el botón de búsqueda para encontrar básculas.',
+                              ),
+                            ),
+                          );
+                        } else {
+                          print(
+                              '✅ UI: Mostrando ${items.length ~/ 2} dispositivos');
+                        }
+
+                        return ListView(children: items);
+                      },
                     ),
-                    const SizedBox(height: 8),
-                  ],
+                  ),
+                  const SizedBox(height: 8),
 
                   // === Lista de dispositivos cercanos ===
                   Row(
                     children: [
                       Text(
-                        'Cercanos (${_mode == TransportMode.spp ? 'Clásico' : 'BLE'})',
+                        'Dispositivos Cercanos',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const Spacer(),
@@ -329,6 +342,11 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
+  }
+
+  void _sendCommand(String command) {
+    print('📤 Enviando comando manual: $command');
+    context.read<conn.ConnectionBloc>().add(conn.SendCommandRequested(command));
   }
 
   void _connect(BtDevice d) {

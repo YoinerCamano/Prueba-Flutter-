@@ -5,7 +5,6 @@ import '../../domain/entities.dart';
 import '../blocs/scan/scan_cubit.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../widgets/device_tile.dart';
-import 'home_page.dart' show TransportMode; // reutilizamos el enum
 
 class BlePage extends StatefulWidget {
   const BlePage({super.key});
@@ -18,8 +17,8 @@ class _BlePageState extends State<BlePage> {
   @override
   void initState() {
     super.initState();
-    // Lanzar un escaneo BLE al abrir la pantalla
-    context.read<ScanCubit>().scan(mode: TransportMode.ble);
+    // Lanzar un escaneo unificado al abrir la pantalla
+    context.read<ScanCubit>().scanUnified();
   }
 
   @override
@@ -30,7 +29,7 @@ class _BlePageState extends State<BlePage> {
         actions: [
           IconButton(
             tooltip: 'Escanear',
-            onPressed: () => context.read<ScanCubit>().scan(mode: TransportMode.ble),
+            onPressed: () => context.read<ScanCubit>().scanUnified(),
             icon: const Icon(Icons.search),
           ),
         ],
@@ -51,8 +50,9 @@ class _BlePageState extends State<BlePage> {
                 children: [
                   // Indicador de escaneo
                   BlocBuilder<ScanCubit, ScanState>(
-                    builder: (context, s) =>
-                        s.scanning ? const LinearProgressIndicator() : const SizedBox.shrink(),
+                    builder: (context, s) => s.scanning
+                        ? const LinearProgressIndicator()
+                        : const SizedBox.shrink(),
                   ),
                   const SizedBox(height: 12),
                   Expanded(

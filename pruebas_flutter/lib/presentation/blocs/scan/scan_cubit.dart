@@ -2,7 +2,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
-import '../../pages/home_page.dart';
 
 part 'scan_state.dart';
 
@@ -10,9 +9,6 @@ class ScanCubit extends Cubit<ScanState> {
   final BluetoothRepository sppRepo;
   final BluetoothRepository bleRepo;
   ScanCubit(this.sppRepo, this.bleRepo) : super(const ScanState.initial());
-
-  BluetoothRepository _repo(TransportMode mode) =>
-      mode == TransportMode.spp ? sppRepo : bleRepo;
 
   Future<void> loadBonded() async {
     print('🔄 === CARGANDO DISPOSITIVOS VINCULADOS ===');
@@ -39,30 +35,6 @@ class ScanCubit extends Cubit<ScanState> {
     } catch (e) {
       print('❌ Error cargando dispositivos vinculados: $e');
       emit(state.copyWith(loading: false, error: e.toString()));
-    }
-  }
-
-  Future<void> scan({TransportMode mode = TransportMode.spp}) async {
-    print('🔍 === INICIANDO ESCANEO ===');
-    print('📡 Modo: ${mode == TransportMode.spp ? 'SPP' : 'BLE'}');
-
-    emit(state.copyWith(scanning: true, error: null));
-
-    try {
-      final found =
-          await _repo(mode).scanNearby(timeout: const Duration(seconds: 15));
-      print('📊 Dispositivos encontrados en escaneo: ${found.length}');
-
-      for (int i = 0; i < found.length; i++) {
-        final device = found[i];
-        print('🔸 [$i] ${device.name} (${device.id})');
-      }
-
-      emit(state.copyWith(scanning: false, found: found));
-      print('✅ Escaneo completado');
-    } catch (e) {
-      print('❌ Error en escaneo: $e');
-      emit(state.copyWith(scanning: false, error: e.toString()));
     }
   }
 

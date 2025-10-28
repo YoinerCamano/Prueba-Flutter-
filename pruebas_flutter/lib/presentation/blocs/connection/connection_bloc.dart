@@ -51,7 +51,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       if (connected) {
         print('✅ Conexión verificada, configurando streams...');
         _sub = repo.rawStream().listen((line) {
-          print('📥 Stream data: $line');
+          print('');
+          print('🔄 =============== DATOS DEL STREAM ===============');
+          print('📥 Datos recibidos del stream: "$line"');
+          print('📥 Timestamp: ${DateTime.now().toIso8601String()}');
+          print('================================================');
+          print('');
           add(RawLineArrived(line));
         }, onError: (error) {
           print('❌ Error en stream: $error');
@@ -98,6 +103,64 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (s is! Connected) return;
     final line = e.line.trim();
 
+    // === LOGGING DETALLADO DE TODOS LOS DATOS RECIBIDOS ===
+    print('');
+    print('🔄 =============== DATOS RECIBIDOS DE BÁSCULA ===============');
+    print('📨 Línea completa: "$line"');
+    print('📏 Longitud: ${line.length} caracteres');
+    print(
+        '🔤 Caracteres individuales: ${line.split('').map((c) => "'$c'").join(', ')}');
+    print(
+        '🔢 Códigos ASCII: ${line.runes.map((r) => r.toString()).join(', ')}');
+    print(
+        '🔠 Códigos HEX: ${line.runes.map((r) => '0x${r.toRadixString(16)}').join(', ')}');
+
+    if (line.isNotEmpty) {
+      print('🎯 Primer carácter: "${line[0]}" (ASCII: ${line.codeUnitAt(0)})');
+      print(
+          '🎯 Último carácter: "${line[line.length - 1]}" (ASCII: ${line.codeUnitAt(line.length - 1)})');
+    }
+
+    // Detectar posibles patrones comunes
+    if (line.contains('|')) {
+      print('📊 Contiene pipes (|) - posible formato delimitado');
+      final parts = line.split('|');
+      print(
+          '📊 Partes separadas por |: ${parts.map((p) => '"$p"').join(', ')}');
+    }
+
+    if (line.contains(',')) {
+      print('📊 Contiene comas (,) - posible formato CSV');
+      final parts = line.split(',');
+      print(
+          '📊 Partes separadas por ,: ${parts.map((p) => '"$p"').join(', ')}');
+    }
+
+    if (line.contains(';')) {
+      print('📊 Contiene punto y coma (;) - posible formato delimitado');
+      final parts = line.split(';');
+      print(
+          '📊 Partes separadas por ;: ${parts.map((p) => '"$p"').join(', ')}');
+    }
+
+    if (RegExp(r'\d').hasMatch(line)) {
+      print('🔢 Contiene números - posibles datos numéricos');
+      final numbers =
+          RegExp(r'\d+\.?\d*').allMatches(line).map((m) => m.group(0)).toList();
+      print('🔢 Números encontrados: ${numbers.join(', ')}');
+    }
+
+    if (line.contains('{') || line.contains('}')) {
+      print('🔧 Contiene llaves - posible comando o respuesta estructurada');
+    }
+
+    if (line.contains('[') || line.contains(']')) {
+      print('🔧 Contiene corchetes - posible formato estructurado');
+    }
+
+    print('========================================================');
+    print('');
+
     print('🔍 Procesando línea: "$line"');
 
     if (line == '__DISCONNECTED__') {
@@ -106,7 +169,22 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       return;
     }
 
-    // Detectar datos de peso específicos para Tru-Test S3
+    // Detectar formato específico de Tru-Test S3: "88|7.95|3.308|1.02|09:31:44.340"
+    // Formato: ID|PESO|VALOR1|VALOR2|TIMESTAMP
+    final s3Regex = RegExp(r'^\d+\|(\d+\.?\d*)\|[\d\.]+\|[\d\.]+\|[\d:\.]+$');
+    final s3Match = s3Regex.firstMatch(line);
+
+    if (s3Match != null) {
+      final weightStr = s3Match.group(1);
+      final weight = double.tryParse(weightStr ?? '');
+      if (weight != null) {
+        print('⚖️  PESO S3 (formato pipes) DETECTADO: ${weight}kg');
+        emit(s.copyWith(weight: WeightReading(kg: weight, at: DateTime.now())));
+        return;
+      }
+    }
+
+    // Detectar datos de peso específicos para Tru-Test S3 (formato original)
     // Formato esperado: [peso] ej: [0.00], [23.45], etc.
     final weightRegex = RegExp(r'\[(\d+\.?\d*)\]');
     final weightMatch = weightRegex.firstMatch(line);
@@ -115,7 +193,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final weightStr = weightMatch.group(1);
       final weight = double.tryParse(weightStr ?? '');
       if (weight != null) {
-        print('⚖️  PESO S3 DETECTADO: ${weight}kg');
+        print('⚖️  PESO S3 (formato corchetes) DETECTADO: ${weight}kg');
         emit(s.copyWith(weight: WeightReading(kg: weight, at: DateTime.now())));
         return;
       }
@@ -148,6 +226,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       emit(s.copyWith(weight: WeightReading(kg: kg, at: DateTime.now())));
     } else {
       print('❓ Línea no reconocida: "$line"');
+      print(
+          '🔍 Caracteres hex de la línea: ${line.runes.map((r) => r.toRadixString(16)).join(' ')}');
     }
   }
 
