@@ -13,10 +13,6 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
 
-  // Nueva lógica: Queue de comandos esperados en orden
-  final List<String> _expectedResponses = [];
-  int _responseIndex = 0;
-
   ConnectionBloc(this.repo) : super(const ConnectionState.disconnected()) {
     on<ConnectRequested>(_onConnect);
     on<DisconnectRequested>(_onDisconnect);
@@ -56,11 +52,6 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         });
 
         emit(ConnectionState.connected(device: e.device));
-
-        // Establecer secuencia inicial de comandos
-        _expectedResponses.clear();
-        _expectedResponses.addAll(['RW', 'BV', 'BC']);
-        _responseIndex = 0;
 
         // Volver a comandos separados con mejor control
         print('🚀 Solicitando peso inicial...');
@@ -151,45 +142,25 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
       if (value != null) {
         print('🔍 Valor detectado: $value (${status.name})');
-        print(
-            '📊 Respuesta esperada #${_responseIndex}: ${_expectedResponses.isNotEmpty ? _expectedResponses[_responseIndex % _expectedResponses.length] : "ninguna"}');
 
-        // Procesar basado en el orden de comandos enviados
-        if (_expectedResponses.isNotEmpty) {
-          final expectedCommand =
-              _expectedResponses[_responseIndex % _expectedResponses.length];
+        // NUEVA LÓGICA: Interpretar basado en rangos de valores típicos
+        // En lugar de usar secuencia, usar heurística de rangos
 
-          if (expectedCommand == 'RW') {
-            print(
-                '⚖️ INTERPRETADO COMO PESO (secuencia): ${value}kg - ${status.name}');
-            emit(s.copyWith(
-                weight: WeightReading(
-                    kg: value, at: DateTime.now(), status: status)));
-          } else if (expectedCommand == 'BV') {
-            if (value >= 1.0 && value <= 6.0) {
-              print('🔋 INTERPRETADO COMO VOLTAJE (secuencia): ${value}V');
-              emit(s.copyWith(
-                  batteryVoltage:
-                      BatteryStatus(volts: value, at: DateTime.now())));
-            } else {
-              print('⚠️ Valor fuera de rango para voltaje: $value');
-            }
-          } else if (expectedCommand == 'BC') {
-            if (value >= 0 && value <= 100) {
-              print('🔋 INTERPRETADO COMO PORCENTAJE (secuencia): ${value}%');
-              emit(s.copyWith(
-                  batteryPercent:
-                      BatteryStatus(percent: value, at: DateTime.now())));
-            } else {
-              print('⚠️ Valor fuera de rango para porcentaje: $value');
-            }
-          }
-
-          _responseIndex++;
+        if (value >= 1.0 && value <= 6.0) {
+          // Rango típico de voltaje de batería (1V - 6V)
+          print('🔋 INTERPRETADO COMO VOLTAJE (rango): ${value}V');
+          emit(s.copyWith(
+              batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
+        } else if (value >= 0 && value <= 100 && value % 1 == 0) {
+          // Rango típico de porcentaje (0% - 100%) y es número entero
+          print('🔋 INTERPRETADO COMO PORCENTAJE (rango): ${value}%');
+          emit(s.copyWith(
+              batteryPercent:
+                  BatteryStatus(percent: value, at: DateTime.now())));
         } else {
-          // Fallback: interpretar como peso si no hay secuencia definida
+          // Cualquier otro valor se interpreta como peso
           print(
-              '⚖️ INTERPRETADO COMO PESO (fallback): ${value}kg - ${status.name}');
+              '⚖️ INTERPRETADO COMO PESO (rango): ${value}kg - ${status.name}');
           emit(s.copyWith(
               weight: WeightReading(
                   kg: value, at: DateTime.now(), status: status)));
@@ -267,18 +238,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       StartPolling e, Emitter<ConnectionState> emit) async {
     _pollTimer?.cancel();
 
-    // Definir la secuencia de comandos que se enviarán
-    _expectedResponses.clear();
-    _expectedResponses.addAll(['RW', 'BV', 'BC']);
-    _responseIndex = 0;
-
     int tick = 0;
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 300), (t) {
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 50), (t) {
       tick++;
 
       // Reiniciar secuencia cada ciclo completo
       if (tick % 3 == 1) {
-        _responseIndex = 0; // Reiniciar contador de respuestas
         print('📊 Polling: Solicitando peso...');
         add(SendCommandRequested('{RW}'));
       } else if (tick % 3 == 2) {
@@ -353,11 +318,6 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           print('📥 DATOS AUTO-CONEXIÓN: "$line"');
           add(RawLineArrived(line));
         });
-
-        // Establecer secuencia inicial de comandos
-        _expectedResponses.clear();
-        _expectedResponses.addAll(['RW', 'BV', 'BC']);
-        _responseIndex = 0;
 
         // Iniciar polling automático
         print('🔄 Iniciando polling para conexión automática...');

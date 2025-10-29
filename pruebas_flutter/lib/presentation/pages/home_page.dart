@@ -279,15 +279,30 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 12),
                   ],
 
-                  // === Botón de control ===
-                  FilledButton.tonalIcon(
-                    onPressed: (connected || connecting)
-                        ? () => context
-                            .read<conn.ConnectionBloc>()
-                            .add(conn.DisconnectRequested())
-                        : null,
-                    icon: const Icon(Icons.link_off, size: 18),
-                    label: Text(connecting ? 'Cancelar' : 'Desconectar'),
+                  // === Botones de control ===
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: (connected || connecting)
+                            ? () => context
+                                .read<conn.ConnectionBloc>()
+                                .add(conn.DisconnectRequested())
+                            : null,
+                        icon: const Icon(Icons.link_off, size: 18),
+                        label: Text(connecting ? 'Cancelar' : 'Desconectar'),
+                      ),
+                      FilledButton.icon(
+                        onPressed: connected
+                            ? () => context
+                                .read<conn.ConnectionBloc>()
+                                .add(conn.SendCommandRequested('{SCZERO}'))
+                            : null,
+                        icon: const Icon(Icons.exposure_zero, size: 18),
+                        label: const Text('Zero'),
+                      ),
+                    ],
                   ),
                 ],
               ),
