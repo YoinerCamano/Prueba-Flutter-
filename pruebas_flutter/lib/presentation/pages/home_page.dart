@@ -279,48 +279,15 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 12),
                   ],
 
-                  // === Botones de control (con Wrap para evitar overflow) ===
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      FilledButton.tonalIcon(
-                        onPressed: (connected || connecting)
-                            ? () => context
-                                .read<conn.ConnectionBloc>()
-                                .add(conn.DisconnectRequested())
-                            : null,
-                        icon: const Icon(Icons.link_off, size: 18),
-                        label: Text(connecting ? 'Cancelar' : 'Desconectar'),
-                      ),
-                      FilledButton.icon(
-                        onPressed: connected
-                            ? () => context
-                                .read<conn.ConnectionBloc>()
-                                .add(conn.SendCommandRequested('{RW}'))
-                            : null,
-                        icon: const Icon(Icons.refresh, size: 18),
-                        label: const Text('Forzar lectura'),
-                      ),
-                      FilledButton.icon(
-                        onPressed: connected
-                            ? () => context
-                                .read<conn.ConnectionBloc>()
-                                .add(conn.SendCommandRequested('{BV}'))
-                            : null,
-                        icon: const Icon(Icons.battery_charging_full, size: 18),
-                        label: const Text('Leer BV'),
-                      ),
-                      FilledButton.icon(
-                        onPressed: connected
-                            ? () => context
-                                .read<conn.ConnectionBloc>()
-                                .add(conn.SendCommandRequested('{BC}'))
-                            : null,
-                        icon: const Icon(Icons.battery_std, size: 18),
-                        label: const Text('Leer BC'),
-                      ),
-                    ],
+                  // === Botón de control ===
+                  FilledButton.tonalIcon(
+                    onPressed: (connected || connecting)
+                        ? () => context
+                            .read<conn.ConnectionBloc>()
+                            .add(conn.DisconnectRequested())
+                        : null,
+                    icon: const Icon(Icons.link_off, size: 18),
+                    label: Text(connecting ? 'Cancelar' : 'Desconectar'),
                   ),
                 ],
               ),
