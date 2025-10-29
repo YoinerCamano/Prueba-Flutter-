@@ -8,6 +8,28 @@ class WeightCard extends StatelessWidget {
   const WeightCard(
       {super.key, this.weight, this.batteryVoltage, this.batteryPercent});
 
+  Color _getWeightColor(WeightStatus status) {
+    switch (status) {
+      case WeightStatus.stable:
+        return Colors.green;
+      case WeightStatus.unstable:
+        return Colors.orange;
+      case WeightStatus.negative:
+        return Colors.red;
+    }
+  }
+
+  String _getStatusText(WeightStatus status) {
+    switch (status) {
+      case WeightStatus.stable:
+        return 'Estable';
+      case WeightStatus.unstable:
+        return 'Inestable';
+      case WeightStatus.negative:
+        return 'Negativo';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final w = weight?.kg;
@@ -69,16 +91,46 @@ class WeightCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            // Peso principal centrado (SOLO PESO)
+            // Peso principal centrado con color según estado
             Center(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  w != null ? '${w.toStringAsFixed(2)} kg' : '--.-- kg',
-                  style: Theme.of(context).textTheme.displayLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
+              child: Column(
+                children: [
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      w != null ? '${w.toStringAsFixed(2)} kg' : '--.-- kg',
+                      style: Theme.of(context).textTheme.displayLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: weight != null
+                                ? _getWeightColor(weight!.status)
+                                : null,
+                          ),
+                    ),
+                  ),
+                  // Indicador de estado del peso
+                  if (weight != null) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _getWeightColor(weight!.status).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color:
+                              _getWeightColor(weight!.status).withOpacity(0.3),
+                        ),
                       ),
-                ),
+                      child: Text(
+                        _getStatusText(weight!.status),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: _getWeightColor(weight!.status),
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
             const SizedBox(height: 8),

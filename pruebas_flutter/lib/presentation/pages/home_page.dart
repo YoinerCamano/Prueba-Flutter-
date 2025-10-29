@@ -22,6 +22,12 @@ class _HomePageState extends State<HomePage> {
     print('🏠 === INICIALIZANDO HOME PAGE ===');
     print('📱 Cargando dispositivos vinculados automáticamente...');
     context.read<ScanCubit>().loadBonded();
+
+    // Verificar si ya hay una conexión activa al iniciar
+    print('🔍 Verificando conexión automática...');
+    context
+        .read<conn.ConnectionBloc>()
+        .add(conn.CheckAutoConnectionRequested());
   }
 
   @override
@@ -55,17 +61,56 @@ class _HomePageState extends State<HomePage> {
           },
           builder: (context, connState) {
             final connected = connState is conn.Connected;
+            final connecting = connState is conn.Connecting;
 
             return Padding(
               padding: const EdgeInsets.all(16.0),
               child: Column(
                 children: [
-                  // === Tarjeta de lectura de peso o mensaje vacío ===
+                  // === Tarjeta de lectura de peso, estado de conexión o mensaje vacío ===
                   if (connected)
                     WeightCard(
                       weight: connState.weight,
                       batteryVoltage: connState.batteryVoltage,
                       batteryPercent: connState.batteryPercent,
+                    )
+                  else if (connecting)
+                    Card(
+                      color: color.surfaceContainer,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          children: [
+                            const CircularProgressIndicator(),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Conectando...',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleLarge
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Estableciendo conexión con ${connState.device.name}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
                     )
                   else
                     Card(
@@ -89,50 +134,10 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
 
-                  // === Botones de comando manual (solo si está conectado) ===
-                  if (connected) ...[
-                    const SizedBox(height: 8),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Comandos de Prueba',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              children: [
-                                ElevatedButton.icon(
-                                  onPressed: () => _sendCommand('{RW}'),
-                                  icon: const Icon(Icons.scale, size: 16),
-                                  label: const Text('Peso'),
-                                ),
-                                ElevatedButton.icon(
-                                  onPressed: () => _sendCommand('{BV}'),
-                                  icon: const Icon(Icons.battery_std, size: 16),
-                                  label: const Text('Batería'),
-                                ),
-                                ElevatedButton.icon(
-                                  onPressed: () => _sendCommand('{BC}'),
-                                  icon: const Icon(Icons.battery_charging_full,
-                                      size: 16),
-                                  label: const Text('Carga'),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
                   const SizedBox(height: 16),
 
-                  // === Lista de dispositivos disponibles (solo si NO está conectado) ===
-                  if (!connected) ...[
+                  // === Lista de dispositivos disponibles (solo si NO está conectado ni conectando) ===
+                  if (!connected && !connecting) ...[
                     Row(
                       children: [
                         Text(
@@ -274,46 +279,45 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 12),
                   ],
 
-                  // === Botones de control ===
-                  Row(
+                  // === Botones de control (con Wrap para evitar overflow) ===
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       FilledButton.tonalIcon(
-                        onPressed: connected
+                        onPressed: (connected || connecting)
                             ? () => context
                                 .read<conn.ConnectionBloc>()
                                 .add(conn.DisconnectRequested())
                             : null,
-                        icon: const Icon(Icons.link_off),
-                        label: const Text('Desconectar'),
+                        icon: const Icon(Icons.link_off, size: 18),
+                        label: Text(connecting ? 'Cancelar' : 'Desconectar'),
                       ),
-                      const SizedBox(width: 12),
                       FilledButton.icon(
                         onPressed: connected
                             ? () => context
                                 .read<conn.ConnectionBloc>()
                                 .add(conn.SendCommandRequested('{RW}'))
                             : null,
-                        icon: const Icon(Icons.refresh),
+                        icon: const Icon(Icons.refresh, size: 18),
                         label: const Text('Forzar lectura'),
                       ),
-                      const SizedBox(width: 12),
                       FilledButton.icon(
                         onPressed: connected
                             ? () => context
                                 .read<conn.ConnectionBloc>()
                                 .add(conn.SendCommandRequested('{BV}'))
                             : null,
-                        icon: const Icon(Icons.battery_charging_full),
+                        icon: const Icon(Icons.battery_charging_full, size: 18),
                         label: const Text('Leer BV'),
                       ),
-                      const SizedBox(width: 12),
                       FilledButton.icon(
                         onPressed: connected
                             ? () => context
                                 .read<conn.ConnectionBloc>()
                                 .add(conn.SendCommandRequested('{BC}'))
                             : null,
-                        icon: const Icon(Icons.battery_std),
+                        icon: const Icon(Icons.battery_std, size: 18),
                         label: const Text('Leer BC'),
                       ),
                     ],
@@ -352,11 +356,6 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
-  }
-
-  void _sendCommand(String command) {
-    print('📤 Enviando comando manual: $command');
-    context.read<conn.ConnectionBloc>().add(conn.SendCommandRequested(command));
   }
 
   void _connect(BtDevice d) {

@@ -1,19 +1,23 @@
 import 'package:equatable/equatable.dart';
 
 class BtDevice extends Equatable {
-  final String id;   // MAC (SPP) o deviceId (BLE)
+  final String id; // MAC (SPP) o deviceId (BLE)
   final String name;
   const BtDevice({required this.id, required this.name});
   @override
   List<Object?> get props => [id, name];
 }
 
+enum WeightStatus { stable, unstable, negative }
+
 class WeightReading extends Equatable {
   final double? kg;
   final DateTime at;
-  const WeightReading({required this.kg, required this.at});
+  final WeightStatus status;
+  const WeightReading(
+      {required this.kg, required this.at, this.status = WeightStatus.stable});
   @override
-  List<Object?> get props => [kg, at];
+  List<Object?> get props => [kg, at, status];
 }
 
 class BatteryStatus extends Equatable {

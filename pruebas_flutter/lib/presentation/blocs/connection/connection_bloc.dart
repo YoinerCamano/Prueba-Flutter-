@@ -13,9 +13,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
 
-  // Track del último comando enviado para interpretar respuestas
-  String? _lastCommand;
-  final Map<String, DateTime> _commandHistory = {};
+  // Nueva lógica: Queue de comandos esperados en orden
+  final List<String> _expectedResponses = [];
+  int _responseIndex = 0;
 
   ConnectionBloc(this.repo) : super(const ConnectionState.disconnected()) {
     on<ConnectRequested>(_onConnect);
@@ -25,69 +25,62 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     on<StartPolling>(_onStartPolling);
     on<StopPolling>(_onStopPolling);
     on<CheckManualConnectionRequested>(_onCheckManualConnection);
+    on<CheckAutoConnectionRequested>(_onCheckAutoConnection);
   }
 
   Future<void> _onConnect(
       ConnectRequested e, Emitter<ConnectionState> emit) async {
-    print('🔗 === INICIANDO PROCESO DE CONEXIÓN ===');
-    print('🎯 Dispositivo objetivo: ${e.device.name} (${e.device.id})');
-
     emit(ConnectionState.connecting(device: e.device));
     await _sub?.cancel();
-    _pollTimer?.cancel(); // Detener polling anterior
+    _pollTimer?.cancel();
 
     try {
-      print('📡 Intentando conectar via repositorio...');
       await repo.connect(e.device.id);
 
-      // Verificar que realmente estamos conectados con timeout
-      print('🔍 Verificando estado de conexión...');
+      // Verificar conexión
       bool connected = false;
-
-      // Intentar verificar conexión hasta 3 veces con delay
       for (int i = 0; i < 3; i++) {
         await Future.delayed(const Duration(milliseconds: 500));
         connected = await repo.isConnected();
-        print('📊 Verificación ${i + 1}/3: $connected');
         if (connected) break;
       }
 
       if (connected) {
-        print('✅ Conexión verificada, configurando streams...');
         _sub = repo.rawStream().listen((line) {
-          print('');
-          print('🔄 =============== DATOS DEL STREAM ===============');
-          print('📥 Datos recibidos del stream: "$line"');
-          print('📥 Timestamp: ${DateTime.now().toIso8601String()}');
-          print('================================================');
-          print('');
+          print('📥 DATOS RECIBIDOS: "$line"');
           add(RawLineArrived(line));
         }, onError: (error) {
-          print('❌ Error en stream: $error');
           add(RawLineArrived('__ERROR__: $error'));
         }, onDone: () {
-          print('🔌 Stream terminado');
           add(RawLineArrived('__DISCONNECTED__'));
         });
 
         emit(ConnectionState.connected(device: e.device));
 
-        // Esperar más tiempo antes de iniciar polling para S3
-        print('⏳ Esperando estabilización antes de iniciar polling...');
-        await Future.delayed(const Duration(milliseconds: 2000));
-        add(StartPolling());
+        // Establecer secuencia inicial de comandos
+        _expectedResponses.clear();
+        _expectedResponses.addAll(['RW', 'BV', 'BC']);
+        _responseIndex = 0;
 
-        print('🎉 *** CONEXIÓN COMPLETADA EXITOSAMENTE ***');
+        // Volver a comandos separados con mejor control
+        print('🚀 Solicitando peso inicial...');
+        add(SendCommandRequested('{RW}'));
+        await Future.delayed(const Duration(milliseconds: 800));
+        print('🔋 Solicitando voltaje inicial...');
+        add(SendCommandRequested('{BV}'));
+        await Future.delayed(const Duration(milliseconds: 800));
+        print('🔋 Solicitando porcentaje inicial...');
+        add(SendCommandRequested('{BC}'));
+
+        await Future.delayed(const Duration(milliseconds: 1000));
+        add(StartPolling());
       } else {
-        print('❌ La verificación de conexión falló');
         emit(ConnectionState.error(
-            'La conexión no se estableció correctamente después de múltiples verificaciones'));
+            'La conexión no se estableció correctamente'));
       }
     } catch (err) {
-      // Asegurar que el polling esté detenido en caso de error
       _pollTimer?.cancel();
       _pollTimer = null;
-      print('💥 Error en proceso de conexión: $err');
       emit(ConnectionState.error('Error al conectar: $err'));
     }
   }
@@ -107,74 +100,14 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (s is! Connected) return;
     final line = e.line.trim();
 
-    // === LOGGING DETALLADO DE TODOS LOS DATOS RECIBIDOS ===
-    print('');
-    print('🔄 =============== DATOS RECIBIDOS DE BÁSCULA ===============');
-    print('📨 Línea completa: "$line"');
-    print('📏 Longitud: ${line.length} caracteres');
-    print(
-        '🔤 Caracteres individuales: ${line.split('').map((c) => "'$c'").join(', ')}');
-    print(
-        '🔢 Códigos ASCII: ${line.runes.map((r) => r.toString()).join(', ')}');
-    print(
-        '🔠 Códigos HEX: ${line.runes.map((r) => '0x${r.toRadixString(16)}').join(', ')}');
-
-    if (line.isNotEmpty) {
-      print('🎯 Primer carácter: "${line[0]}" (ASCII: ${line.codeUnitAt(0)})');
-      print(
-          '🎯 Último carácter: "${line[line.length - 1]}" (ASCII: ${line.codeUnitAt(line.length - 1)})');
-    }
-
-    // Detectar posibles patrones comunes
-    if (line.contains('|')) {
-      print('📊 Contiene pipes (|) - posible formato delimitado');
-      final parts = line.split('|');
-      print(
-          '📊 Partes separadas por |: ${parts.map((p) => '"$p"').join(', ')}');
-    }
-
-    if (line.contains(',')) {
-      print('📊 Contiene comas (,) - posible formato CSV');
-      final parts = line.split(',');
-      print(
-          '📊 Partes separadas por ,: ${parts.map((p) => '"$p"').join(', ')}');
-    }
-
-    if (line.contains(';')) {
-      print('📊 Contiene punto y coma (;) - posible formato delimitado');
-      final parts = line.split(';');
-      print(
-          '📊 Partes separadas por ;: ${parts.map((p) => '"$p"').join(', ')}');
-    }
-
-    if (RegExp(r'\d').hasMatch(line)) {
-      print('🔢 Contiene números - posibles datos numéricos');
-      final numbers =
-          RegExp(r'\d+\.?\d*').allMatches(line).map((m) => m.group(0)).toList();
-      print('🔢 Números encontrados: ${numbers.join(', ')}');
-    }
-
-    if (line.contains('{') || line.contains('}')) {
-      print('🔧 Contiene llaves - posible comando o respuesta estructurada');
-    }
-
-    if (line.contains('[') || line.contains(']')) {
-      print('🔧 Contiene corchetes - posible formato estructurado');
-    }
-
-    print('========================================================');
-    print('');
-
-    print('🔍 Procesando línea: "$line"');
+    print('📥 DATOS RECIBIDOS: "$line"');
 
     if (line == '__DISCONNECTED__') {
-      print('🔌 Desconexión detectada');
       emit(const ConnectionState.disconnected());
       return;
     }
 
     // Detectar formato específico de Tru-Test S3: "88|7.95|3.308|1.02|09:31:44.340"
-    // Formato: ID|PESO|VALOR1|VALOR2|TIMESTAMP
     final s3Regex = RegExp(r'^\d+\|(\d+\.?\d*)\|[\d\.]+\|[\d\.]+\|[\d:\.]+$');
     final s3Match = s3Regex.firstMatch(line);
 
@@ -182,84 +115,85 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final weightStr = s3Match.group(1);
       final weight = double.tryParse(weightStr ?? '');
       if (weight != null) {
-        print('⚖️  PESO S3 (formato pipes) DETECTADO: ${weight}kg');
-        emit(s.copyWith(weight: WeightReading(kg: weight, at: DateTime.now())));
+        print('⚖️ PESO S3 detectado: ${weight}kg');
+        emit(s.copyWith(
+            weight: WeightReading(
+                kg: weight, at: DateTime.now(), status: WeightStatus.stable)));
         return;
       }
     }
 
-    // Detectar datos de peso específicos para Tru-Test S3 (formato original)
-    // Formato esperado: [peso] ej: [0.00], [23.45], etc.
-    // También maneja respuestas de batería basadas en comandos recientes
-    final weightRegex = RegExp(r'\[(\d+\.?\d*)\]');
+    // Detectar datos en formato [valor], [Uvalor] o [-valor]
+    final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
     if (weightMatch != null) {
-      final valueStr = weightMatch.group(1);
-      final value = double.tryParse(valueStr ?? '');
+      final fullValueStr = weightMatch.group(1) ?? '';
+      double? value;
+      WeightStatus status = WeightStatus.stable;
+
+      if (fullValueStr.startsWith('U')) {
+        // Peso inestable [U0.5]
+        status = WeightStatus.unstable;
+        value = double.tryParse(fullValueStr.substring(1));
+        print('⚖️ PESO INESTABLE detectado: $value kg');
+      } else if (fullValueStr.startsWith('-')) {
+        // Peso negativo [-0.5]
+        status = WeightStatus.negative;
+        value = double.tryParse(fullValueStr);
+        print('⚖️ PESO NEGATIVO detectado: $value kg');
+      } else {
+        // Peso estable [0.5]
+        status = WeightStatus.stable;
+        value = double.tryParse(fullValueStr);
+        print('⚖️ PESO ESTABLE detectado: $value kg');
+      }
+
       if (value != null) {
-        // Determinar si es peso o batería basado en comandos recientes y lógica más estricta
-        final now = DateTime.now();
-        final recentBV = _commandHistory['{BV}'];
-        final recentBC = _commandHistory['{BC}'];
-
+        print('🔍 Valor detectado: $value (${status.name})');
         print(
-            '🔍 Analizando valor [${value}] - Comandos recientes: BV=$recentBV, BC=$recentBC');
+            '📊 Respuesta esperada #${_responseIndex}: ${_expectedResponses.isNotEmpty ? _expectedResponses[_responseIndex % _expectedResponses.length] : "ninguna"}');
 
-        // VOLTAJE: Solo si comando {BV} reciente Y valor está en rango típico de voltajes (1.0-6.0V)
-        if (recentBV != null &&
-            now.difference(recentBV).inSeconds < 3 &&
-            value >= 1.0 &&
-            value <= 6.0) {
+        // Procesar basado en el orden de comandos enviados
+        if (_expectedResponses.isNotEmpty) {
+          final expectedCommand =
+              _expectedResponses[_responseIndex % _expectedResponses.length];
+
+          if (expectedCommand == 'RW') {
+            print(
+                '⚖️ INTERPRETADO COMO PESO (secuencia): ${value}kg - ${status.name}');
+            emit(s.copyWith(
+                weight: WeightReading(
+                    kg: value, at: DateTime.now(), status: status)));
+          } else if (expectedCommand == 'BV') {
+            if (value >= 1.0 && value <= 6.0) {
+              print('🔋 INTERPRETADO COMO VOLTAJE (secuencia): ${value}V');
+              emit(s.copyWith(
+                  batteryVoltage:
+                      BatteryStatus(volts: value, at: DateTime.now())));
+            } else {
+              print('⚠️ Valor fuera de rango para voltaje: $value');
+            }
+          } else if (expectedCommand == 'BC') {
+            if (value >= 0 && value <= 100) {
+              print('🔋 INTERPRETADO COMO PORCENTAJE (secuencia): ${value}%');
+              emit(s.copyWith(
+                  batteryPercent:
+                      BatteryStatus(percent: value, at: DateTime.now())));
+            } else {
+              print('⚠️ Valor fuera de rango para porcentaje: $value');
+            }
+          }
+
+          _responseIndex++;
+        } else {
+          // Fallback: interpretar como peso si no hay secuencia definida
           print(
-              '🔋 BATERÍA VOLTAJE: ${value}V (comando {BV} hace ${now.difference(recentBV).inSeconds}s)');
+              '⚖️ INTERPRETADO COMO PESO (fallback): ${value}kg - ${status.name}');
           emit(s.copyWith(
-              batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
-          _commandHistory.remove('{BV}'); // Limpiar comando usado
-          return;
+              weight: WeightReading(
+                  kg: value, at: DateTime.now(), status: status)));
         }
-
-        // PORCENTAJE: Solo si comando {BC} reciente Y valor está en rango 0-100 Y no es peso típico
-        if (recentBC != null &&
-            now.difference(recentBC).inSeconds < 3 &&
-            value >= 0 &&
-            value <= 100 &&
-            value < 200) {
-          // Evitar confundir pesos altos con porcentajes
-          print(
-              '🔋 BATERÍA PORCENTAJE: ${value}% (comando {BC} hace ${now.difference(recentBC).inSeconds}s)');
-          emit(s.copyWith(
-              batteryPercent:
-                  BatteryStatus(percent: value, at: DateTime.now())));
-          _commandHistory.remove('{BC}'); // Limpiar comando usado
-          return;
-        }
-
-        // PESO: Si no hay comandos de batería recientes o el valor no coincide con rangos de batería
-        print(
-            '⚖️  PESO S3: ${value}kg (sin comandos de batería recientes o fuera de rangos)');
-        emit(s.copyWith(weight: WeightReading(kg: value, at: DateTime.now())));
-        return;
-      }
-    }
-
-    // Detectar datos de batería (método fallback para otros formatos)
-    if (line.toUpperCase().contains('BV') || line.toUpperCase().contains('V')) {
-      final v = extractFirstNumber(line);
-      if (v != null) {
-        print('🔋 BATERÍA VOLTAJE: ${v}V');
-        emit(s.copyWith(
-            batteryVoltage: BatteryStatus(volts: v, at: DateTime.now())));
-        return;
-      }
-    }
-
-    if (line.toUpperCase().contains('BC') || line.contains('%')) {
-      final p = extractFirstNumber(line);
-      if (p != null) {
-        print('🔋 BATERÍA PORCENTAJE: ${p}%');
-        emit(s.copyWith(
-            batteryPercent: BatteryStatus(percent: p, at: DateTime.now())));
         return;
       }
     }
@@ -267,45 +201,33 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     // Fallback: intentar extraer cualquier número como peso
     final kg = extractFirstNumber(line);
     if (kg != null) {
-      print('📊 PESO GENÉRICO: ${kg}kg');
-      emit(s.copyWith(weight: WeightReading(kg: kg, at: DateTime.now())));
+      print('⚖️ PESO GENÉRICO: ${kg}kg');
+      emit(s.copyWith(
+          weight: WeightReading(
+              kg: kg, at: DateTime.now(), status: WeightStatus.stable)));
     } else {
-      print('❓ Línea no reconocida: "$line"');
-      print(
-          '🔍 Caracteres hex de la línea: ${line.runes.map((r) => r.toRadixString(16)).join(' ')}');
+      print('❓ LÍNEA NO RECONOCIDA: "$line"');
     }
   }
 
   Future<void> _onSendCommand(
       SendCommandRequested e, Emitter<ConnectionState> emit) async {
     try {
-      // Verificar si realmente estamos conectados antes de enviar
       if (!await repo.isConnected()) {
-        print(
-            '⚠️  Intento de enviar comando sin conexión activa, deteniendo polling');
         _pollTimer?.cancel();
         _pollTimer = null;
         emit(const ConnectionState.disconnected());
         return;
       }
 
-      print('📤 Enviando comando: ${e.command}');
-
-      // Registrar comando en el historial para tracking de respuestas
-      if (e.command == '{BV}' || e.command == '{BC}') {
-        // Limpiar comandos antiguos (más de 10 segundos)
-        _cleanOldCommands();
-
-        _commandHistory[e.command] = DateTime.now();
-        print('📝 Comando ${e.command} registrado para tracking de respuesta');
+      // Registrar comandos en la secuencia esperada
+      if (e.command == '{RW}' || e.command == '{BV}' || e.command == '{BC}') {
+        print('📝 Comando ${e.command} enviado');
+        // No necesitamos historial, usamos la secuencia predefinida
       }
 
       await repo.sendCommand(e.command);
-      print('✅ Comando enviado exitosamente');
     } catch (err) {
-      print('❌ Error enviando comando ${e.command}: $err');
-
-      // Analizar el tipo de error para decidir la acción
       final errorMsg = err.toString().toLowerCase();
 
       if (errorMsg.contains('no hay conexión') ||
@@ -313,33 +235,26 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           errorMsg.contains('socket') ||
           errorMsg.contains('closed') ||
           errorMsg.contains('broken pipe')) {
-        print('💔 Conexión perdida detectada, cambiando a desconectado');
         _pollTimer?.cancel();
         _pollTimer = null;
         await _sub?.cancel();
         _sub = null;
         emit(const ConnectionState.disconnected());
       } else {
-        // Error temporal, mantener conexión pero reportar error
-        print('⚠️  Error temporal en comando, manteniendo conexión');
         emit(ConnectionState.error('Fallo enviando comando: $err'));
 
-        // Verificar si la conexión sigue activa después del error
         try {
           if (await repo.isConnected()) {
             final s = state;
             if (s is Connected) {
-              print('🔄 Conexión sigue activa, restaurando estado');
               emit(s);
             }
           } else {
-            print('💔 Conexión perdida después del error');
             _pollTimer?.cancel();
             _pollTimer = null;
             emit(const ConnectionState.disconnected());
           }
         } catch (checkError) {
-          print('❌ Error verificando conexión: $checkError');
           _pollTimer?.cancel();
           _pollTimer = null;
           emit(const ConnectionState.disconnected());
@@ -351,23 +266,26 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   Future<void> _onStartPolling(
       StartPolling e, Emitter<ConnectionState> emit) async {
     _pollTimer?.cancel();
-    print('🔄 Iniciando polling optimizado para Tru-Test S3...');
+
+    // Definir la secuencia de comandos que se enviarán
+    _expectedResponses.clear();
+    _expectedResponses.addAll(['RW', 'BV', 'BC']);
+    _responseIndex = 0;
 
     int tick = 0;
-    // Polling más lento para S3: cada 2 segundos en lugar de 300ms
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 2000), (t) {
+    _pollTimer = Timer.periodic(const Duration(milliseconds: 300), (t) {
       tick++;
-      print('📊 Polling tick $tick - Enviando {RW}');
-      add(SendCommandRequested('{RW}'));
 
-      // Leer batería con espaciado para evitar mezclar respuestas
-      if (tick % 15 == 0) {
-        print('🔋 Leyendo voltaje de batería...');
+      // Reiniciar secuencia cada ciclo completo
+      if (tick % 3 == 1) {
+        _responseIndex = 0; // Reiniciar contador de respuestas
+        print('📊 Polling: Solicitando peso...');
+        add(SendCommandRequested('{RW}'));
+      } else if (tick % 3 == 2) {
+        print('🔋 Polling: Solicitando voltaje...');
         add(SendCommandRequested('{BV}'));
-      }
-
-      if (tick % 20 == 0) {
-        print('🔋 Leyendo porcentaje de batería...');
+      } else if (tick % 3 == 0) {
+        print('🔋 Polling: Solicitando porcentaje...');
         add(SendCommandRequested('{BC}'));
       }
     });
@@ -382,54 +300,75 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   /// Nuevo método para verificar conexiones manuales
   Future<void> _onCheckManualConnection(
       CheckManualConnectionRequested e, Emitter<ConnectionState> emit) async {
-    print('🔍 === VERIFICANDO CONEXIÓN MANUAL ===');
-    print('🎯 Dispositivo: ${e.device.name} (${e.device.id})');
+    if (state is Connected) {
+      return;
+    }
+
+    try {
+      final isConnected = await repo.isConnected();
+
+      if (isConnected) {
+        emit(ConnectionState.connected(device: e.device));
+
+        _sub = repo.rawStream().listen((line) {
+          add(RawLineArrived(line));
+        });
+
+        add(StartPolling());
+      }
+    } catch (e) {
+      // Error silencioso
+    }
+  }
+
+  /// Nuevo método para detectar conexiones automáticas al iniciar la app
+  Future<void> _onCheckAutoConnection(
+      CheckAutoConnectionRequested e, Emitter<ConnectionState> emit) async {
+    print('🔍 === VERIFICANDO CONEXIÓN AUTOMÁTICA AL INICIAR ===');
 
     // Solo verificar si no estamos ya conectados
     if (state is Connected) {
-      print('✅ Ya conectado, omitiendo verificación manual');
+      print('✅ Ya conectado, omitiendo verificación automática');
       return;
     }
 
     try {
       // Verificar si hay conexión activa
       final isConnected = await repo.isConnected();
+      print('📡 Estado de conexión detectado: $isConnected');
 
       if (isConnected) {
-        print('🎉 ¡Conexión manual detectada!');
+        print('🎉 ¡Conexión automática detectada!');
+
+        // Crear un dispositivo dummy para S3 ya que está conectado
+        final s3Device = BtDevice(
+            id: 'DE:FD:76:A4:D7:ED', // MAC conocido de la S3
+            name: 'S3 (Conectado)');
 
         // Emitir estado conectado
-        emit(ConnectionState.connected(device: e.device));
+        emit(ConnectionState.connected(device: s3Device));
 
         // Configurar escucha de datos
         _sub = repo.rawStream().listen((line) {
+          print('📥 DATOS AUTO-CONEXIÓN: "$line"');
           add(RawLineArrived(line));
         });
 
-        // Iniciar polling automático para la S3
+        // Establecer secuencia inicial de comandos
+        _expectedResponses.clear();
+        _expectedResponses.addAll(['RW', 'BV', 'BC']);
+        _responseIndex = 0;
+
+        // Iniciar polling automático
+        print('🔄 Iniciando polling para conexión automática...');
         add(StartPolling());
+
+        print('✅ Conexión automática configurada exitosamente');
       } else {
-        print('📱 No se detectó conexión manual activa');
+        print('📱 No se detectó conexión automática');
       }
     } catch (e) {
-      print('❌ Error verificando conexión manual: $e');
-    }
-  }
-
-  /// Limpiar comandos antiguos del historial (más de 10 segundos)
-  void _cleanOldCommands() {
-    final now = DateTime.now();
-    final keysToRemove = <String>[];
-
-    for (final entry in _commandHistory.entries) {
-      if (now.difference(entry.value).inSeconds > 10) {
-        keysToRemove.add(entry.key);
-      }
-    }
-
-    for (final key in keysToRemove) {
-      _commandHistory.remove(key);
-      print('🧹 Comando antiguo $key removido del historial');
+      print('❌ Error verificando conexión automática: $e');
     }
   }
 

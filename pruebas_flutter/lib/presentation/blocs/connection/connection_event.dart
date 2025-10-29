@@ -39,3 +39,6 @@ class CheckManualConnectionRequested extends ConnectionEvent {
   @override
   List<Object?> get props => [device];
 }
+
+/// Nuevo evento para detectar conexiones automáticas al iniciar
+class CheckAutoConnectionRequested extends ConnectionEvent {}
