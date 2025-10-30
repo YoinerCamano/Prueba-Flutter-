@@ -8,7 +8,7 @@ class BluetoothRepositoryBle implements BluetoothRepository {
 
   @override
   Future<List<BtDevice>> scanNearby(
-      {Duration timeout = const Duration(seconds: 8)}) async {
+      {Duration timeout = const Duration(seconds: 3)}) async {
     print('🔍 === ESCANEO BLE ===');
     final res = await adapter.scan(timeout: timeout);
     print('📡 Dispositivos BLE encontrados: ${res.length}');

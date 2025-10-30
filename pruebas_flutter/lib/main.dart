@@ -6,6 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'data/bluetooth_repository_spp.dart';
 import 'data/ble/ble_adapter.dart';
 import 'data/ble/bluetooth_repository_ble.dart';
+import 'data/datasources/command_registry.dart';
 import 'domain/bluetooth_repository.dart';
 import 'presentation/blocs/connection/connection_bloc.dart';
 import 'presentation/blocs/scan/scan_cubit.dart';
@@ -96,7 +97,8 @@ class MyApp extends StatelessWidget {
       providers: [
         BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
         BlocProvider(
-            create: (_) => ConnectionBloc(_BridgeRepository(sppRepo, bleRepo))),
+            create: (_) => ConnectionBloc(
+                _BridgeRepository(sppRepo, bleRepo), CommandRegistry())),
       ],
       child: MaterialApp(
         title: 'Pruebas Flutter',

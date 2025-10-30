@@ -4,16 +4,45 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/utils/number_parsing.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
+import '../../../data/datasources/command_registry.dart';
 
 part 'connection_event.dart';
 part 'connection_state.dart';
 
 class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   final BluetoothRepository repo;
+  final CommandRegistry _commandRegistry;
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
 
-  ConnectionBloc(this.repo) : super(const ConnectionState.disconnected()) {
+  // Variables para tracking (compatibilidad con código existente)
+  String? _lastCommandSent;
+  DateTime? _lastCommandTime;
+  final Map<String, String> _commandMapping = {
+    '{RW}': 'PESO',
+    '{BV}': 'VOLTAJE',
+    '{BC}': 'PORCENTAJE',
+  };
+
+  // 🎯 NUEVAS VARIABLES PARA POLLING SECUENCIAL
+  bool _waitingForResponse = false;
+  Timer? _responseTimeoutTimer;
+
+  // ⚡ OPTIMIZACIÓN: Control de frecuencia de batería
+  DateTime? _lastBatteryRequest;
+  static const Duration _batteryInterval = Duration(seconds: 10);
+
+  // 📊 ESTADÍSTICAS DE EFICIENCIA
+  int _weightRequestCount = 0;
+  int _batteryRequestCount = 0;
+
+  bool _shouldRequestBattery() {
+    if (_lastBatteryRequest == null) return true;
+    return DateTime.now().difference(_lastBatteryRequest!) >= _batteryInterval;
+  }
+
+  ConnectionBloc(this.repo, this._commandRegistry)
+      : super(const ConnectionState.disconnected()) {
     on<ConnectRequested>(_onConnect);
     on<DisconnectRequested>(_onDisconnect);
     on<RawLineArrived>(_onRawLine);
@@ -35,7 +64,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
       // Verificar conexión
       bool connected = false;
-      for (int i = 0; i < 3; i++) {
+      for (int i = 0; i < 2; i++) {
         await Future.delayed(const Duration(milliseconds: 500));
         connected = await repo.isConnected();
         if (connected) break;
@@ -53,17 +82,25 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
         emit(ConnectionState.connected(device: e.device));
 
-        // Volver a comandos separados con mejor control
-        print('🚀 Solicitando peso inicial...');
+        // 🎯 COMANDOS INICIALES CON TRACKING DETALLADO
+        print('🚀 === INICIANDO SECUENCIA DE COMANDOS INICIALES ===');
+
+        // Comando 1: Solicitar peso inicial
+        print('� 1/3 Enviando comando inicial: {RW} → Esperando PESO');
         add(SendCommandRequested('{RW}'));
-        await Future.delayed(const Duration(milliseconds: 800));
-        print('🔋 Solicitando voltaje inicial...');
+        await Future.delayed(const Duration(milliseconds: 400));
+
+        // Comando 2: Solicitar voltaje inicial
+        print('📤 2/3 Enviando comando inicial: {BV} → Esperando VOLTAJE');
         add(SendCommandRequested('{BV}'));
-        await Future.delayed(const Duration(milliseconds: 800));
-        print('🔋 Solicitando porcentaje inicial...');
+        await Future.delayed(const Duration(milliseconds: 400));
+
+        // Comando 3: Solicitar porcentaje inicial
+        print('📤 3/3 Enviando comando inicial: {BC} → Esperando PORCENTAJE');
         add(SendCommandRequested('{BC}'));
 
-        await Future.delayed(const Duration(milliseconds: 1000));
+        await Future.delayed(const Duration(milliseconds: 500));
+        print('✅ Comandos iniciales completados → Iniciando polling...');
         add(StartPolling());
       } else {
         emit(ConnectionState.error(
@@ -91,30 +128,39 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (s is! Connected) return;
     final line = e.line.trim();
 
-    print('📥 DATOS RECIBIDOS: "$line"');
+    // 🔍 TRACKING OPTIMIZADO: Usar CommandRegistry primero
+    final timeStr = DateTime.now().toString().substring(11, 23);
+    print('📊 [$timeStr] RESPUESTA: "$line"');
+
+    // Intentar correlacionar con el registro de comandos
+    final resolved = _commandRegistry.resolveWithIncoming(line);
+    String correlationInfo = '';
+
+    if (resolved != null) {
+      final latency =
+          resolved.resolvedAt!.difference(resolved.createdAt).inMilliseconds;
+      final commandType = resolved.mappedCommand?.description ?? 'DESCONOCIDO';
+      correlationInfo =
+          'Comando ${resolved.rawCommand} ($commandType) → Latencia: ${latency}ms';
+      print('🔗 [$timeStr] CORRELACIÓN REGISTRY: $correlationInfo');
+    } else {
+      // Fallback al sistema legacy
+      final expectedType = _commandMapping[_lastCommandSent] ?? 'DESCONOCIDO';
+      final timeSinceCommand = _lastCommandTime != null
+          ? DateTime.now().difference(_lastCommandTime!).inMilliseconds
+          : 0;
+      correlationInfo =
+          'Comando $_lastCommandSent ($expectedType) → Latencia: ${timeSinceCommand}ms';
+      print('🔗 [$timeStr] CORRELACIÓN LEGACY: $correlationInfo');
+    }
 
     if (line == '__DISCONNECTED__') {
       emit(const ConnectionState.disconnected());
       return;
     }
 
-    // Detectar formato específico de Tru-Test S3: "88|7.95|3.308|1.02|09:31:44.340"
-    final s3Regex = RegExp(r'^\d+\|(\d+\.?\d*)\|[\d\.]+\|[\d\.]+\|[\d:\.]+$');
-    final s3Match = s3Regex.firstMatch(line);
-
-    if (s3Match != null) {
-      final weightStr = s3Match.group(1);
-      final weight = double.tryParse(weightStr ?? '');
-      if (weight != null) {
-        print('⚖️ PESO S3 detectado: ${weight}kg');
-        emit(s.copyWith(
-            weight: WeightReading(
-                kg: weight, at: DateTime.now(), status: WeightStatus.stable)));
-        return;
-      }
-    }
-
-    // Detectar datos en formato [valor], [Uvalor] o [-valor]
+    // OPTIMIZACIÓN: Procesar solo datos de peso para máxima velocidad
+    // Detectar formato [valor], [Uvalor] o [-valor] - PESO PRIORITARIO
     final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
@@ -124,43 +170,78 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       WeightStatus status = WeightStatus.stable;
 
       if (fullValueStr.startsWith('U')) {
-        // Peso inestable [U0.5]
         status = WeightStatus.unstable;
         value = double.tryParse(fullValueStr.substring(1));
-        print('⚖️ PESO INESTABLE detectado: $value kg');
       } else if (fullValueStr.startsWith('-')) {
-        // Peso negativo [-0.5]
         status = WeightStatus.negative;
         value = double.tryParse(fullValueStr);
-        print('⚖️ PESO NEGATIVO detectado: $value kg');
       } else {
-        // Peso estable [0.5]
         status = WeightStatus.stable;
         value = double.tryParse(fullValueStr);
-        print('⚖️ PESO ESTABLE detectado: $value kg');
       }
 
       if (value != null) {
-        print('🔍 Valor detectado: $value (${status.name})');
+        // 🎯 CORRELACIÓN INTELIGENTE: Priorizar CommandRegistry
+        String? lastCommand = '';
 
-        // NUEVA LÓGICA: Interpretar basado en rangos de valores típicos
-        // En lugar de usar secuencia, usar heurística de rangos
+        if (resolved != null) {
+          // Usar información del CommandRegistry (más precisa)
+          lastCommand = resolved.rawCommand;
+        } else {
+          // Fallback al sistema legacy
+          lastCommand = _lastCommandSent;
+        }
 
-        if (value >= 1.0 && value <= 6.0) {
-          // Rango típico de voltaje de batería (1V - 6V)
-          print('🔋 INTERPRETADO COMO VOLTAJE (rango): ${value}V');
+        final timeStr = DateTime.now().toString().substring(11, 23);
+
+        // Prioridad 1: Correlación basada en comando conocido
+        if (lastCommand == '{BV}' && value >= 1.0 && value <= 5) {
+          // Comando {BV} + rango de voltaje = VOLTAJE CONFIRMADO
+          print(
+              '✅ [$timeStr] VOLTAJE CONFIRMADO: $value V (comando: $lastCommand) ⚡');
           emit(s.copyWith(
               batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
-        } else if (value >= 0 && value <= 100 && value % 1 == 0) {
-          // Rango típico de porcentaje (0% - 100%) y es número entero
-          print('🔋 INTERPRETADO COMO PORCENTAJE (rango): ${value}%');
+          _lastCommandSent = null; // Limpiar tracking legacy
+          return;
+        }
+
+        if (lastCommand == '{BC}' &&
+            value >= 0 &&
+            value <= 100 &&
+            value % 1 == 0) {
+          // Comando {BC} + rango de porcentaje = PORCENTAJE CONFIRMADO
+          print(
+              '✅ [$timeStr] PORCENTAJE CONFIRMADO: $value % (comando: $lastCommand) 🔋');
+          emit(s.copyWith(
+              batteryPercent:
+                  BatteryStatus(percent: value, at: DateTime.now())));
+          _lastCommandSent = null; // Limpiar tracking legacy
+          return;
+        }
+
+        if (lastCommand == '{RW}') {
+          // Comando {RW} = PESO CONFIRMADO
+          print(
+              '✅ [$timeStr] PESO CONFIRMADO: $value kg (status: $status, comando: $lastCommand) ⚖️');
+          emit(s.copyWith(
+              weight: WeightReading(
+                  kg: value, at: DateTime.now(), status: status)));
+          _lastCommandSent = null; // Limpiar tracking legacy
+          return;
+        }
+
+        // Prioridad 2: Si no hay comando claro, usar rangos como antes
+        if (value >= 3.0 && value <= 4.5 && value.toString().contains('.')) {
+          print('🔋 VOLTAJE (por rango): $value V');
+          emit(s.copyWith(
+              batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
+        } else if (value >= 0 && value <= 100 && value % 1 == 0 && value < 10) {
+          print('🔋 PORCENTAJE (por rango): $value %');
           emit(s.copyWith(
               batteryPercent:
                   BatteryStatus(percent: value, at: DateTime.now())));
         } else {
-          // Cualquier otro valor se interpreta como peso
-          print(
-              '⚖️ INTERPRETADO COMO PESO (rango): ${value}kg - ${status.name}');
+          print('⚖️ PESO (por defecto): $value kg (status: $status)');
           emit(s.copyWith(
               weight: WeightReading(
                   kg: value, at: DateTime.now(), status: status)));
@@ -169,16 +250,69 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       }
     }
 
-    // Fallback: intentar extraer cualquier número como peso
+    // OPTIMIZACIÓN: Fallback rápido sin logs excesivos
     final kg = extractFirstNumber(line);
     if (kg != null) {
-      print('⚖️ PESO GENÉRICO: ${kg}kg');
       emit(s.copyWith(
           weight: WeightReading(
               kg: kg, at: DateTime.now(), status: WeightStatus.stable)));
-    } else {
-      print('❓ LÍNEA NO RECONOCIDA: "$line"');
     }
+
+    // 🎯 DESBLOQUEIO SECUENCIAL: Permitir envío del siguiente comando
+    _unlockNextCommand();
+  }
+
+  /// 🔄 Desbloquea el envío del siguiente comando en la secuencia
+  void _unlockNextCommand() {
+    if (_waitingForResponse) {
+      _waitingForResponse = false;
+      _responseTimeoutTimer?.cancel();
+      _responseTimeoutTimer = null;
+
+      print('🔓 Respuesta recibida → Desbloqueando siguiente comando');
+
+      // Programar el siguiente comando con un delay mínimo
+      Future.delayed(const Duration(milliseconds: 100), () {
+        _sendNextSequentialCommand();
+      });
+    }
+  }
+
+  /// 📤 Envía el siguiente comando con prioridad al peso
+  void _sendNextSequentialCommand() {
+    if (_waitingForResponse) return; // Ya hay un comando pendiente
+
+    String nextCommand;
+
+    // 🏆 PRIORIDAD AL PESO: Siempre enviar {RW} a menos que sea tiempo de batería
+    if (_shouldRequestBattery()) {
+      // Es momento de pedir datos de batería (cada 10 segundos)
+      final batteryCommands = ['{BV}', '{BC}'];
+      final batteryIndex = DateTime.now().millisecondsSinceEpoch % 2;
+      nextCommand = batteryCommands[batteryIndex];
+      _lastBatteryRequest = DateTime.now();
+
+      print('🔋 Momento de batería (cada 10s): $nextCommand');
+      _batteryRequestCount++;
+    } else {
+      // Prioridad al peso para máxima frecuencia
+      nextCommand = '{RW}';
+      _weightRequestCount++;
+    }
+
+    // 📊 Mostrar estadísticas cada 20 comandos de peso
+    if (_weightRequestCount % 20 == 0 && _weightRequestCount > 0) {
+      final efficiency = (_weightRequestCount /
+              (_weightRequestCount + _batteryRequestCount) *
+              100)
+          .toStringAsFixed(1);
+      print(
+          '📊 EFICIENCIA: ${_weightRequestCount} peso vs ${_batteryRequestCount} batería → $efficiency% peso');
+    }
+
+    print(
+        '🔄 Comando optimizado: $nextCommand → Prioridad: ${nextCommand == '{RW}' ? 'PESO ⚖️' : 'BATERÍA 🔋'}');
+    add(SendCommandRequested(nextCommand));
   }
 
   Future<void> _onSendCommand(
@@ -191,13 +325,36 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         return;
       }
 
-      // Registrar comandos en la secuencia esperada
-      if (e.command == '{RW}' || e.command == '{BV}' || e.command == '{BC}') {
-        print('📝 Comando ${e.command} enviado');
-        // No necesitamos historial, usamos la secuencia predefinida
-      }
+      // 🎯 TRACKING DUAL: Sistema legacy + nuevo registry
+      _lastCommandSent = e.command;
+      _lastCommandTime = DateTime.now();
+      final expectedType = _commandMapping[e.command] ?? 'DESCONOCIDO';
+      final timeStr = _lastCommandTime!.toString().substring(11, 23);
 
+      // También registrar en el nuevo sistema
+      _commandRegistry.registerOutgoing(e.command);
+
+      print('📤 [$timeStr] ENVIANDO: ${e.command} → Esperando: $expectedType');
+
+      // 🔒 BLOQUEO SECUENCIAL: Marcar como esperando respuesta
+      _waitingForResponse = true;
+
+      // 🛡️ TIMEOUT DE SEGURIDAD: Si no llega respuesta en 500ms, desbloquear
+      _responseTimeoutTimer?.cancel();
+      _responseTimeoutTimer = Timer(const Duration(milliseconds: 500), () {
+        if (_waitingForResponse) {
+          print(
+              '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
+          _waitingForResponse = false;
+          _sendNextSequentialCommand();
+        }
+      });
+
+      // OPTIMIZACIÓN: Envío directo por BLE
       await repo.sendCommand(e.command);
+
+      print(
+          '✅ [$timeStr] COMANDO ENVIADO: ${e.command} → Aguardando respuesta...');
     } catch (err) {
       final errorMsg = err.toString().toLowerCase();
 
@@ -237,29 +394,33 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   Future<void> _onStartPolling(
       StartPolling e, Emitter<ConnectionState> emit) async {
     _pollTimer?.cancel();
+    _responseTimeoutTimer?.cancel();
 
-    int tick = 0;
-    _pollTimer = Timer.periodic(const Duration(milliseconds: 50), (t) {
-      tick++;
+    print('🎯 === INICIANDO POLLING OPTIMIZADO (PESO PRIORITARIO) ===');
+    print('📋 Comandos: {RW} (continuo) + {BV}/{BC} (cada 10s)');
 
-      // Reiniciar secuencia cada ciclo completo
-      if (tick % 3 == 1) {
-        print('📊 Polling: Solicitando peso...');
-        add(SendCommandRequested('{RW}'));
-      } else if (tick % 3 == 2) {
-        print('🔋 Polling: Solicitando voltaje...');
-        add(SendCommandRequested('{BV}'));
-      } else if (tick % 3 == 0) {
-        print('🔋 Polling: Solicitando porcentaje...');
-        add(SendCommandRequested('{BC}'));
-      }
-    });
+    // 🔄 NUEVO SISTEMA: Polling optimizado con prioridad al peso
+    // Solo envía el primer comando, los siguientes se envían cuando llega respuesta
+
+    // Reiniciar estado
+    _waitingForResponse = false;
+    _lastBatteryRequest = null; // Permitir primera solicitud de batería
+    _weightRequestCount = 0; // Reiniciar estadísticas
+    _batteryRequestCount = 0;
+
+    // Iniciar la secuencia enviando el primer comando
+    _sendNextSequentialCommand();
   }
 
   Future<void> _onStopPolling(
       StopPolling e, Emitter<ConnectionState> emit) async {
     _pollTimer?.cancel();
     _pollTimer = null;
+    _responseTimeoutTimer?.cancel();
+    _responseTimeoutTimer = null;
+    _waitingForResponse = false;
+
+    print('🛑 Polling secuencial detenido');
   }
 
   /// Nuevo método para verificar conexiones manuales
@@ -336,6 +497,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   Future<void> close() async {
     await _sub?.cancel();
     _pollTimer?.cancel();
+    _responseTimeoutTimer?.cancel();
     return super.close();
   }
 }
