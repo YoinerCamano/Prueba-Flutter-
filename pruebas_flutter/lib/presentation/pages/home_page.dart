@@ -7,6 +7,7 @@ import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
+import '../widgets/scan_devices_dialog.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -40,7 +41,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           IconButton(
             tooltip: 'Buscar dispositivos',
-            onPressed: () => context.read<ScanCubit>().scanUnified(),
+            onPressed: () => _showScanDialog(),
             icon: const Icon(Icons.search),
           ),
         ],
@@ -136,12 +137,12 @@ class _HomePageState extends State<HomePage> {
 
                   const SizedBox(height: 16),
 
-                  // === Lista de dispositivos disponibles (solo si NO está conectado ni conectando) ===
+                  // === Lista de dispositivos vinculados/emparejados únicamente ===
                   if (!connected && !connecting) ...[
                     Row(
                       children: [
                         Text(
-                          'Dispositivos Disponibles',
+                          'Dispositivos Emparejados',
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const Spacer(),
@@ -167,103 +168,17 @@ class _HomePageState extends State<HomePage> {
                     Expanded(
                       child: BlocBuilder<ScanCubit, ScanState>(
                         builder: (context, scanState) {
-                          print('🎨 === UI REBUILD DISPOSITIVOS ===');
+                          print(
+                              '🎨 === UI REBUILD DISPOSITIVOS EMPAREJADOS ===');
                           print(
                               '📊 Dispositivos vinculados: ${scanState.bonded.length}');
-                          print(
-                              '📊 Dispositivos encontrados: ${scanState.found.length}');
-                          print('🔄 Loading: ${scanState.loading}');
-                          print('❌ Error: ${scanState.error}');
 
                           final items = <Widget>[];
-                          final deviceIds = <String>{};
 
-                          // Mostrar tanto dispositivos vinculados como encontrados
-                          // Primero dispositivos vinculados
+                          // Mostrar SOLO dispositivos vinculados/emparejados
                           for (final d in scanState.bonded) {
-                            if (!deviceIds.contains(d.id)) {
-                              print(
-                                  '🎨 Agregando vinculado: ${d.name} (${d.id})');
-                              items.add(
-                                DeviceTile(
-                                  device: d,
-                                  onTap: () => _connect(d),
-                                ),
-                              );
-                              items.add(const Divider(height: 1));
-                              deviceIds.add(d.id);
-                            }
-                          }
-
-                          // Luego dispositivos encontrados
-                          for (final d in scanState.found) {
-                            if (!deviceIds.contains(d.id)) {
-                              print(
-                                  '🎨 Agregando encontrado: ${d.name} (${d.id})');
-                              items.add(
-                                DeviceTile(
-                                  device: d,
-                                  onTap: () => _connect(d),
-                                ),
-                              );
-                              items.add(const Divider(height: 1));
-                              deviceIds.add(d.id);
-                            }
-                          }
-
-                          if (items.isEmpty) {
-                            print('⚠️ UI: Lista vacía, mostrando mensaje');
-                            items.add(
-                              ListTile(
-                                title: Text(
-                                  'No hay dispositivos disponibles. Usa el botón de búsqueda para encontrar básculas.',
-                                ),
-                              ),
-                            );
-                          } else {
                             print(
-                                '✅ UI: Mostrando ${items.length ~/ 2} dispositivos');
-                          }
-
-                          return ListView(children: items);
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // === Lista de dispositivos cercanos ===
-                    Row(
-                      children: [
-                        Text(
-                          'Dispositivos Cercanos',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        BlocBuilder<ScanCubit, ScanState>(
-                          builder: (_, s) => s.scanning
-                              ? Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    const Text('Escaneando dispositivos...'),
-                                  ],
-                                )
-                              : const SizedBox.shrink(),
-                        ),
-                      ],
-                    ),
-                    SizedBox(
-                      height: 170,
-                      child: BlocBuilder<ScanCubit, ScanState>(
-                        builder: (context, scanState) {
-                          final items = <Widget>[];
-                          for (final d in scanState.found) {
+                                '🎨 Agregando emparejado: ${d.name} (${d.id})');
                             items.add(
                               DeviceTile(
                                 device: d,
@@ -272,6 +187,65 @@ class _HomePageState extends State<HomePage> {
                             );
                             items.add(const Divider(height: 1));
                           }
+
+                          if (items.isEmpty) {
+                            print('⚠️ UI: Lista vacía, mostrando mensaje');
+                            items.add(
+                              Card(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Column(
+                                    children: [
+                                      Icon(
+                                        Icons.bluetooth_disabled,
+                                        size: 48,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .outline,
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        'No hay dispositivos emparejados',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .outline,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Usa el botón de búsqueda para encontrar nuevos dispositivos',
+                                        textAlign: TextAlign.center,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .outline,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      FilledButton.icon(
+                                        onPressed: () => _showScanDialog(),
+                                        icon:
+                                            const Icon(Icons.search, size: 18),
+                                        label:
+                                            const Text('Buscar Dispositivos'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          } else {
+                            print(
+                                '✅ UI: Mostrando ${items.length ~/ 2} dispositivos emparejados');
+                          }
+
                           return ListView(children: items);
                         },
                       ),
@@ -366,5 +340,15 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
+  }
+
+  void _showScanDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // No se puede cerrar tocando fuera
+      builder: (context) => ScanDevicesDialog(
+        onDeviceSelected: (device) => _connect(device),
+      ),
+    );
   }
 }
