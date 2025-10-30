@@ -146,22 +146,51 @@ class _HomePageState extends State<HomePage> {
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         const Spacer(),
+                        // Botón principal de actualizar
                         TextButton.icon(
-                          onPressed: () => _checkManualConnection(),
-                          icon: const Icon(Icons.bluetooth_connected, size: 16),
-                          label: const Text('Verificar Manual'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
-                          onPressed: () => _runDiagnostic(),
-                          icon: const Icon(Icons.bug_report, size: 16),
-                          label: const Text('Diagnóstico'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton(
                           onPressed: () =>
                               context.read<ScanCubit>().loadBonded(),
-                          child: const Text('Actualizar'),
+                          icon: const Icon(Icons.refresh, size: 16),
+                          label: const Text('Actualizar'),
+                        ),
+                        // Menú desplegable para acciones adicionales
+                        PopupMenuButton<String>(
+                          onSelected: (value) {
+                            switch (value) {
+                              case 'manual':
+                                _checkManualConnection();
+                                break;
+                              case 'diagnostic':
+                                _runDiagnostic();
+                                break;
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'manual',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.bluetooth_connected, size: 16),
+                                  SizedBox(width: 8),
+                                  Text('Verificar Manual'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'diagnostic',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.bug_report, size: 16),
+                                  SizedBox(width: 8),
+                                  Text('Diagnóstico'),
+                                ],
+                              ),
+                            ),
+                          ],
+                          child: const Padding(
+                            padding: EdgeInsets.all(8.0),
+                            child: Icon(Icons.more_vert),
+                          ),
                         ),
                       ],
                     ),
