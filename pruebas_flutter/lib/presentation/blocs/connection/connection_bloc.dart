@@ -161,23 +161,31 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     // OPTIMIZACIÓN: Procesar solo datos de peso para máxima velocidad
     // Detectar formato [valor], [Uvalor] o [-valor] - PESO PRIORITARIO
-    final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*)\]');
+    // CORREGIDO: Permite espacios dentro del valor: [U94.8 ], [79 ], etc.
+    final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*\s*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
     if (weightMatch != null) {
-      final fullValueStr = weightMatch.group(1) ?? '';
+      final fullValueStr =
+          (weightMatch.group(1) ?? '').trim(); // Remover espacios
       double? value;
       WeightStatus status = WeightStatus.stable;
 
+      print(
+          '🔍 Valor extraído: "$fullValueStr" (original: "${weightMatch.group(1)}")');
+
       if (fullValueStr.startsWith('U')) {
         status = WeightStatus.unstable;
-        value = double.tryParse(fullValueStr.substring(1));
+        value = double.tryParse(fullValueStr.substring(1).trim());
+        print('📊 Detectado PESO INESTABLE: $value kg');
       } else if (fullValueStr.startsWith('-')) {
         status = WeightStatus.negative;
-        value = double.tryParse(fullValueStr);
+        value = double.tryParse(fullValueStr.trim());
+        print('📊 Detectado PESO NEGATIVO: $value kg');
       } else {
         status = WeightStatus.stable;
-        value = double.tryParse(fullValueStr);
+        value = double.tryParse(fullValueStr.trim());
+        print('📊 Detectado PESO ESTABLE: $value kg');
       }
 
       if (value != null) {
