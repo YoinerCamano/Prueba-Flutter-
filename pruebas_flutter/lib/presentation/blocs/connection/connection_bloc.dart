@@ -28,9 +28,13 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   bool _waitingForResponse = false;
   Timer? _responseTimeoutTimer;
 
+  // 🚀 SECUENCIA INICIAL: Control de comandos de inicio
+  int _initialSequenceStep = 0;
+  bool _isInitialSequence = false;
+
   // ⚡ OPTIMIZACIÓN: Control de frecuencia de batería
   DateTime? _lastBatteryRequest;
-  static const Duration _batteryInterval = Duration(minutes: 1);
+  static const Duration _batteryInterval = Duration(seconds: 10);
 
   // 📊 ESTADÍSTICAS DE EFICIENCIA
   int _weightRequestCount = 0;
@@ -82,25 +86,21 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
         emit(ConnectionState.connected(device: e.device));
 
-        // 🎯 COMANDOS INICIALES CON TRACKING DETALLADO
-        print('🚀 === INICIANDO SECUENCIA DE COMANDOS INICIALES ===');
+        // 🎯 INICIALIZACIÓN: Reiniciar variables de tracking para nueva conexión
+        print(
+            '🚀 === INICIANDO SECUENCIA DE COMANDOS INICIALES CON TRACKING ===');
+        _waitingForResponse = false;
+        _responseTimeoutTimer?.cancel();
+        _responseTimeoutTimer = null;
+        _lastBatteryRequest = null;
+        _weightRequestCount = 0;
+        _batteryRequestCount = 0;
 
-        // Comando 1: Solicitar peso inicial
-        print('� 1/3 Enviando comando inicial: {RW} → Esperando PESO');
-        add(SendCommandRequested('{RW}'));
-        await Future.delayed(const Duration(milliseconds: 100));
+        // 🔄 COMANDOS INICIALES CON SISTEMA SECUENCIAL
+        // Esperar un momento para que la conexión se estabilice
+        await Future.delayed(const Duration(milliseconds: 300));
 
-        // Comando 2: Solicitar voltaje inicial
-        print('📤 2/3 Enviando comando inicial: {BV} → Esperando VOLTAJE');
-        add(SendCommandRequested('{BV}'));
-        await Future.delayed(const Duration(milliseconds: 100));
-
-        // Comando 3: Solicitar porcentaje inicial
-        print('📤 3/3 Enviando comando inicial: {BC} → Esperando PORCENTAJE');
-        add(SendCommandRequested('{BC}'));
-
-        await Future.delayed(const Duration(milliseconds: 200));
-        print('✅ Comandos iniciales completados → Iniciando polling...');
+        print('✅ Conexión estabilizada → Iniciando polling secuencial...');
         add(StartPolling());
       } else {
         emit(ConnectionState.error(
@@ -141,6 +141,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _lastBatteryRequest = null;
     _weightRequestCount = 0;
     _batteryRequestCount = 0;
+
+    // 🚀 Resetear secuencia inicial
+    _isInitialSequence = false;
+    _initialSequenceStep = 0;
 
     // 5. Desconectar del repositorio (esto llamará al BLE adapter)
     print('🔌 Desconectando del dispositivo...');
@@ -320,13 +324,56 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   }
 
   /// 📤 Envía el siguiente comando con prioridad al peso
-  void _sendNextSequentialCommand() {
+  void _sendNextSequentialCommand({String? forceCommand}) {
     if (_waitingForResponse) return; // Ya hay un comando pendiente
 
     String nextCommand;
 
-    // 🏆 PRIORIDAD AL PESO: Siempre enviar {RW} a menos que sea tiempo de batería
-    if (_shouldRequestBattery()) {
+    // 🚀 SECUENCIA INICIAL: Comandos específicos al inicio
+    if (_isInitialSequence) {
+      final initialCommands = ['{RW}', '{BV}', '{BC}'];
+
+      if (_initialSequenceStep < initialCommands.length) {
+        nextCommand = initialCommands[_initialSequenceStep];
+        _initialSequenceStep++;
+
+        print('🚀 Secuencia inicial ($_initialSequenceStep/3): $nextCommand');
+
+        // Si completamos la secuencia inicial, cambiar a modo normal
+        if (_initialSequenceStep >= initialCommands.length) {
+          _isInitialSequence = false;
+          print('✅ Secuencia inicial completada → Modo polling normal');
+        }
+
+        // Actualizar contadores
+        if (nextCommand == '{RW}') {
+          _weightRequestCount++;
+        } else {
+          _batteryRequestCount++;
+          _lastBatteryRequest = DateTime.now();
+        }
+      } else {
+        // Fallback a modo normal si algo falla
+        _isInitialSequence = false;
+        nextCommand = '{RW}';
+        _weightRequestCount++;
+      }
+    }
+    // 🚀 COMANDO FORZADO: Para casos especiales
+    else if (forceCommand != null) {
+      nextCommand = forceCommand;
+      print('🎯 Comando forzado: $nextCommand');
+
+      // Actualizar contadores según el tipo
+      if (nextCommand == '{RW}') {
+        _weightRequestCount++;
+      } else if (nextCommand == '{BV}' || nextCommand == '{BC}') {
+        _batteryRequestCount++;
+        _lastBatteryRequest = DateTime.now();
+      }
+    }
+    // �🏆 PRIORIDAD AL PESO: Siempre enviar {RW} a menos que sea tiempo de batería
+    else if (_shouldRequestBattery()) {
       // Es momento de pedir datos de batería (cada 10 segundos)
       final batteryCommands = ['{BV}', '{BC}'];
       final batteryIndex = DateTime.now().millisecondsSinceEpoch % 2;
@@ -438,19 +485,31 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _responseTimeoutTimer?.cancel();
 
     print('🎯 === INICIANDO POLLING OPTIMIZADO (PESO PRIORITARIO) ===');
-    print('📋 Comandos: {RW} (continuo) + {BV}/{BC} (cada 10s)');
+    print('📋 Sistema: Secuencial con tracking completo');
+    print('📋 Prioridad: {RW} (continuo) + {BV}/{BC} (cada 1 minuto)');
 
     // 🔄 NUEVO SISTEMA: Polling optimizado con prioridad al peso
     // Solo envía el primer comando, los siguientes se envían cuando llega respuesta
 
-    // Reiniciar estado
+    // Reiniciar estado para polling limpio
     _waitingForResponse = false;
-    _lastBatteryRequest = null; // Permitir primera solicitud de batería
-    _weightRequestCount = 0; // Reiniciar estadísticas
+    _responseTimeoutTimer?.cancel();
+    _responseTimeoutTimer = null;
+
+    // 🚀 ACTIVAR SECUENCIA INICIAL: Peso + Batería completa
+    _isInitialSequence = true;
+    _initialSequenceStep = 0;
+    _weightRequestCount = 0;
     _batteryRequestCount = 0;
 
-    // Iniciar la secuencia enviando el primer comando
-    _sendNextSequentialCommand();
+    print('� Activando secuencia inicial: {RW} → {BV} → {BC}');
+
+    // 🚀 SECUENCIA INICIAL: Pedir datos completos al iniciar
+    print('📤 Iniciando secuencia inicial completa con tracking...');
+
+    // Iniciar con la secuencia de comandos iniciales
+    _sendNextSequentialCommand(); // Los siguientes comandos se enviarán automáticamente por el sistema secuencial
+    // cuando lleguen las respuestas correspondientes
   }
 
   Future<void> _onStopPolling(
