@@ -8,6 +8,7 @@ import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
+import '../widgets/scale_status_icon.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -39,6 +40,32 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Básculas – Monitor'),
         actions: [
+          // 🎯 Icono de estado de la báscula
+          BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+            builder: (context, connectionState) {
+              return Padding(
+                padding: const EdgeInsets.only(right: 8.0),
+                child: ScaleStatusIcon(
+                  isConnected: connectionState is conn.Connected,
+                  weight: connectionState is conn.Connected
+                      ? connectionState.weight
+                      : null,
+                  batteryVoltage: connectionState is conn.Connected
+                      ? connectionState.batteryVoltage
+                      : null,
+                  batteryPercent: connectionState is conn.Connected
+                      ? connectionState.batteryPercent
+                      : null,
+                  onTap: () {
+                    // Mostrar detalles rápidos o ir a pantalla de detalles
+                    if (connectionState is conn.Connected) {
+                      _showScaleDetails(context, connectionState);
+                    }
+                  },
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip: 'Buscar dispositivos',
             onPressed: () => _showScanDialog(),
@@ -369,6 +396,115 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
+  }
+
+  /// 📊 Mostrar detalles rápidos de la báscula
+  void _showScaleDetails(BuildContext context, conn.Connected state) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.scale, color: Colors.green),
+            const SizedBox(width: 8),
+            Text('${state.device.name}'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 📊 Información del peso
+            if (state.weight != null) ...[
+              _buildDetailRow(
+                icon: Icons.monitor_weight,
+                label: 'Peso',
+                value: '${state.weight!.kg?.toStringAsFixed(1) ?? 'N/A'} kg',
+                status: state.weight!.status,
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // 🔋 Información de batería
+            if (state.batteryPercent != null) ...[
+              _buildDetailRow(
+                icon: Icons.battery_full,
+                label: 'Batería',
+                value:
+                    '${state.batteryPercent!.percent?.toStringAsFixed(0) ?? 'N/A'}%',
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            if (state.batteryVoltage != null) ...[
+              _buildDetailRow(
+                icon: Icons.electrical_services,
+                label: 'Voltaje',
+                value:
+                    '${state.batteryVoltage!.volts?.toStringAsFixed(2) ?? 'N/A'} V',
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // 📱 Información de conexión
+            _buildDetailRow(
+              icon: Icons.bluetooth_connected,
+              label: 'Estado',
+              value: 'Conectado',
+              status: WeightStatus.stable,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 📋 Construir fila de detalle
+  Widget _buildDetailRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    WeightStatus? status,
+  }) {
+    Color statusColor = Colors.green;
+    if (status != null) {
+      switch (status) {
+        case WeightStatus.stable:
+          statusColor = Colors.green;
+          break;
+        case WeightStatus.unstable:
+          statusColor = Colors.orange;
+          break;
+        case WeightStatus.negative:
+          statusColor = Colors.red;
+          break;
+      }
+    }
+
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: statusColor),
+        const SizedBox(width: 8),
+        Text(
+          '$label:',
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const Spacer(),
+        Text(
+          value,
+          style: TextStyle(
+            color: statusColor,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
   }
 
   void _showScanDialog() {
