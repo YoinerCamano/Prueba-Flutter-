@@ -387,11 +387,69 @@ class BleAdapter {
   }
 
   Future<void> disconnect() async {
-    await _notifySub?.cancel();
-    _notifySub = null;
+    print('🔌 === DESCONECTANDO DISPOSITIVO BLE ===');
+
+    // 1. Cancelar suscripciones de notificaciones
+    if (_notifySub != null) {
+      print('📴 Cancelando suscripción a notificaciones...');
+      await _notifySub?.cancel();
+      _notifySub = null;
+    }
+
+    // 2. Si tenemos un dispositivo conectado, desconectar explícitamente
+    if (_deviceId != null) {
+      print('🔌 Desconectando dispositivo: $_deviceId');
+
+      try {
+        // Esperar a que el stream de conexión termine correctamente
+        final disconnectCompleter = Completer<void>();
+        late StreamSubscription subscription;
+
+        subscription = _ble
+            .connectToDevice(
+          id: _deviceId!,
+          connectionTimeout: const Duration(seconds: 2),
+        )
+            .listen((update) {
+          if (update.connectionState == DeviceConnectionState.disconnected) {
+            print('✅ Dispositivo desconectado correctamente');
+            subscription.cancel();
+            disconnectCompleter.complete();
+          }
+        }, onError: (error) {
+          print('⚠️ Error durante desconexión: $error');
+          subscription.cancel();
+          disconnectCompleter.complete();
+        });
+
+        // Esperar máximo 3 segundos para la desconexión
+        await Future.any([
+          disconnectCompleter.future,
+          Future.delayed(const Duration(seconds: 3)),
+        ]);
+
+        await subscription.cancel();
+
+        // ⏳ IMPORTANTE: Esperar un poco para que Android libere completamente la conexión
+        print('⏳ Esperando liberación completa del sistema BLE...');
+        await Future.delayed(const Duration(milliseconds: 500));
+      } catch (error) {
+        print('⚠️ Error al desconectar dispositivo: $error');
+      }
+    }
+
+    // 3. Limpiar todas las referencias
+    print('🧹 Limpiando referencias...');
     _rxQ = null;
     _txQ = null;
     _deviceId = null;
+
+    // 4. Enviar señal de desconexión al stream
+    if (!_controller.isClosed) {
+      _controller.add('__DISCONNECTED__');
+    }
+
+    print('✅ Desconexión BLE completada - Dispositivo liberado del sistema');
   }
 
   // Método para intentar reestablecer notificaciones

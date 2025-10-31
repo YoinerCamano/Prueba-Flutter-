@@ -30,7 +30,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   // ⚡ OPTIMIZACIÓN: Control de frecuencia de batería
   DateTime? _lastBatteryRequest;
-  static const Duration _batteryInterval = Duration(seconds: 10);
+  static const Duration _batteryInterval = Duration(minutes: 1);
 
   // 📊 ESTADÍSTICAS DE EFICIENCIA
   int _weightRequestCount = 0;
@@ -88,18 +88,18 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         // Comando 1: Solicitar peso inicial
         print('� 1/3 Enviando comando inicial: {RW} → Esperando PESO');
         add(SendCommandRequested('{RW}'));
-        await Future.delayed(const Duration(milliseconds: 400));
+        await Future.delayed(const Duration(milliseconds: 100));
 
         // Comando 2: Solicitar voltaje inicial
         print('📤 2/3 Enviando comando inicial: {BV} → Esperando VOLTAJE');
         add(SendCommandRequested('{BV}'));
-        await Future.delayed(const Duration(milliseconds: 400));
+        await Future.delayed(const Duration(milliseconds: 100));
 
         // Comando 3: Solicitar porcentaje inicial
         print('📤 3/3 Enviando comando inicial: {BC} → Esperando PORCENTAJE');
         add(SendCommandRequested('{BC}'));
 
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 200));
         print('✅ Comandos iniciales completados → Iniciando polling...');
         add(StartPolling());
       } else {
@@ -115,12 +115,45 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   Future<void> _onDisconnect(
       DisconnectRequested e, Emitter<ConnectionState> emit) async {
-    await _sub?.cancel();
-    _sub = null;
+    print('🔌 === INICIANDO DESCONEXIÓN COMPLETA ===');
+
+    // 1. Detener polling y timers
     _pollTimer?.cancel();
     _pollTimer = null;
-    await repo.disconnect();
+    _responseTimeoutTimer?.cancel();
+    _responseTimeoutTimer = null;
+    _waitingForResponse = false;
+
+    // 2. Cancelar suscripción al stream de datos
+    if (_sub != null) {
+      print('📴 Cancelando suscripción al stream de datos...');
+      await _sub?.cancel();
+      _sub = null;
+    }
+
+    // 3. Limpiar CommandRegistry
+    print('🧹 Limpiando registro de comandos...');
+    _commandRegistry.purgeTimeouts();
+
+    // 4. Resetear estadísticas y variables de tracking
+    _lastCommandSent = null;
+    _lastCommandTime = null;
+    _lastBatteryRequest = null;
+    _weightRequestCount = 0;
+    _batteryRequestCount = 0;
+
+    // 5. Desconectar del repositorio (esto llamará al BLE adapter)
+    print('🔌 Desconectando del dispositivo...');
+    try {
+      await repo.disconnect();
+      print('✅ Dispositivo desconectado correctamente');
+    } catch (error) {
+      print('⚠️ Error durante desconexión: $error');
+    }
+
+    // 6. Emitir estado de desconectado
     emit(const ConnectionState.disconnected());
+    print('✅ === DESCONEXIÓN COMPLETA FINALIZADA ===');
   }
 
   void _onRawLine(RawLineArrived e, Emitter<ConnectionState> emit) {
@@ -503,9 +536,30 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   @override
   Future<void> close() async {
-    await _sub?.cancel();
+    print('🔒 === CERRANDO CONNECTION BLOC ===');
+
+    // 1. Cancelar todos los timers
     _pollTimer?.cancel();
     _responseTimeoutTimer?.cancel();
+
+    // 2. Cancelar suscripción al stream
+    await _sub?.cancel();
+
+    // 3. Desconectar dispositivo si está conectado
+    try {
+      final isConnected = await repo.isConnected();
+      if (isConnected) {
+        print('🔌 Desconectando dispositivo antes de cerrar bloc...');
+        await repo.disconnect();
+      }
+    } catch (error) {
+      print('⚠️ Error al desconectar durante close: $error');
+    }
+
+    // 4. Limpiar CommandRegistry
+    _commandRegistry.purgeTimeouts();
+
+    print('✅ ConnectionBloc cerrado correctamente');
     return super.close();
   }
 }
