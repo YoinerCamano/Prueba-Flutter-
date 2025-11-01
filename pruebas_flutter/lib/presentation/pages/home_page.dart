@@ -8,6 +8,7 @@ import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
+import '../widgets/device_info_widget.dart';
 // import '../widgets/scale_status_icon.dart'; // DESACTIVADO
 
 class HomePage extends StatefulWidget {
@@ -66,6 +67,19 @@ class _HomePageState extends State<HomePage> {
               );
             },
           ), */
+          // ❗ Icono de información del dispositivo
+          BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+            builder: (context, connectionState) {
+              if (connectionState is conn.Connected) {
+                return IconButton(
+                  tooltip: 'Acerca del dispositivo',
+                  onPressed: () => _showDeviceInfo(context, connectionState),
+                  icon: const Icon(Icons.info_outline),
+                );
+              }
+              return const SizedBox.shrink(); // No mostrar si no está conectado
+            },
+          ),
           IconButton(
             tooltip: 'Buscar dispositivos',
             onPressed: () => _showScanDialog(),
@@ -506,6 +520,188 @@ class _HomePageState extends State<HomePage> {
       ],
     );
   } */
+
+  /// ❗ Mostrar información completa del dispositivo conectado
+  /// 📋 Mostrar información completa del dispositivo con datos técnicos
+  void _showDeviceInfo(BuildContext context, conn.Connected state) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.info_outline, color: Colors.blue),
+            const SizedBox(width: 8),
+            const Text('Acerca del dispositivo'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 📱 Información básica del dispositivo
+              _buildInfoRow(
+                icon: Icons.bluetooth_connected,
+                label: 'Nombre',
+                value: state.device.name,
+              ),
+              const SizedBox(height: 12),
+              _buildInfoRow(
+                icon: Icons.fingerprint,
+                label: 'ID/MAC',
+                value: state.device.id,
+              ),
+
+              const SizedBox(height: 16),
+              const Divider(),
+              const Text(
+                'Información Técnica',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // 🔧 Información técnica del dispositivo
+              // Será llenada dinámicamente con los comandos
+              DeviceInfoWidget(
+                  connectionBloc: context.read<conn.ConnectionBloc>()),
+
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 12),
+
+              // 📊 Estado actual de datos
+              if (state.weight != null) ...[
+                _buildInfoRow(
+                  icon: Icons.monitor_weight,
+                  label: 'Peso actual',
+                  value: '${state.weight!.kg?.toStringAsFixed(1) ?? 'N/A'} kg',
+                  status: state.weight!.status,
+                ),
+                const SizedBox(height: 12),
+                _buildInfoRow(
+                  icon: Icons.schedule,
+                  label: 'Última lectura',
+                  value: _formatDateTime(state.weight!.at),
+                ),
+                const SizedBox(height: 12),
+              ],
+
+              // 🔋 Información de batería
+              if (state.batteryPercent != null) ...[
+                _buildInfoRow(
+                  icon: Icons.battery_std,
+                  label: 'Batería',
+                  value:
+                      '${state.batteryPercent!.percent?.toStringAsFixed(0) ?? 'N/A'}%',
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (state.batteryVoltage != null) ...[
+                _buildInfoRow(
+                  icon: Icons.electrical_services,
+                  label: 'Voltaje',
+                  value:
+                      '${state.batteryVoltage!.volts?.toStringAsFixed(2) ?? 'N/A'} V',
+                ),
+                const SizedBox(height: 12),
+              ],
+
+              // 📡 Estado de conexión
+              _buildInfoRow(
+                icon: Icons.signal_cellular_alt,
+                label: 'Estado',
+                value: 'Conectado',
+                statusColor: Colors.green,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 📋 Construir fila de información del dispositivo
+  Widget _buildInfoRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    WeightStatus? status,
+    Color? statusColor,
+  }) {
+    Color finalColor = statusColor ?? Colors.grey[600]!;
+
+    if (status != null) {
+      switch (status) {
+        case WeightStatus.stable:
+          finalColor = Colors.green;
+          break;
+        case WeightStatus.unstable:
+          finalColor = Colors.orange;
+          break;
+        case WeightStatus.negative:
+          finalColor = Colors.red;
+          break;
+      }
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: finalColor),
+        const SizedBox(width: 12),
+        Expanded(
+          flex: 2,
+          child: Text(
+            '$label:',
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+            ),
+          ),
+        ),
+        Expanded(
+          flex: 3,
+          child: Text(
+            value,
+            style: TextStyle(
+              color: finalColor,
+              fontWeight: FontWeight.w500,
+              fontSize: 14,
+            ),
+            textAlign: TextAlign.right,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 🕒 Formatear fecha y hora
+  String _formatDateTime(DateTime dateTime) {
+    final now = DateTime.now();
+    final difference = now.difference(dateTime);
+
+    if (difference.inSeconds < 10) {
+      return 'Hace ${difference.inSeconds}s';
+    } else if (difference.inMinutes < 1) {
+      return 'Hace ${difference.inSeconds}s';
+    } else if (difference.inMinutes < 60) {
+      return 'Hace ${difference.inMinutes}min';
+    } else if (difference.inHours < 24) {
+      return 'Hace ${difference.inHours}h';
+    } else {
+      return '${dateTime.day}/${dateTime.month} ${dateTime.hour}:${dateTime.minute.toString().padLeft(2, '0')}';
+    }
+  }
 
   void _showScanDialog() {
     showDialog(
