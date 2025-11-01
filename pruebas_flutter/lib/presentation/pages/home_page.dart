@@ -8,7 +8,7 @@ import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
-import '../widgets/scale_status_icon.dart';
+// import '../widgets/scale_status_icon.dart'; // DESACTIVADO
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -40,8 +40,8 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Básculas – Monitor'),
         actions: [
-          // 🎯 Icono de estado de la báscula
-          BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+          // 🎯 Icono de estado de la báscula - DESACTIVADO
+          /* BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
             builder: (context, connectionState) {
               return Padding(
                 padding: const EdgeInsets.only(right: 8.0),
@@ -65,7 +65,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               );
             },
-          ),
+          ), */
           IconButton(
             tooltip: 'Buscar dispositivos',
             onPressed: () => _showScanDialog(),
@@ -398,8 +398,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// 📊 Mostrar detalles rápidos de la báscula
-  void _showScaleDetails(BuildContext context, conn.Connected state) {
+  /// 📊 Mostrar detalles rápidos de la báscula - DESACTIVADO
+  /* void _showScaleDetails(BuildContext context, conn.Connected state) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -505,7 +505,7 @@ class _HomePageState extends State<HomePage> {
         ),
       ],
     );
-  }
+  } */
 
   void _showScanDialog() {
     showDialog(
