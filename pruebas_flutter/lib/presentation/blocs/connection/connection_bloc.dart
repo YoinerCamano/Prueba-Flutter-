@@ -306,8 +306,22 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     }
 
     // OPTIMIZACIÓN: Procesar solo datos de peso para máxima velocidad
-    // Detectar formato [valor], [Uvalor] o [-valor] - PESO PRIORITARIO
+    // Detectar formato [valor], [Uvalor], [-valor] o [---] - PESO PRIORITARIO
     // ⚠️ SOLO procesar como peso si el último comando fue relacionado con peso
+
+    // Detectar sobrecarga [---]
+    if (line.trim() == '[---]' && !_pollingSuspended) {
+      if (lastCommand == '{RW}') {
+        print(
+            '⚠️ [$timeStr] SOBRECARGA DETECTADA: [---] - Báscula sobrepasó límite');
+        emit(s.copyWith(
+            weight: WeightReading(
+                kg: null, at: DateTime.now(), status: WeightStatus.overload)));
+        _lastCommandSent = null;
+        return;
+      }
+    }
+
     final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*\s*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 

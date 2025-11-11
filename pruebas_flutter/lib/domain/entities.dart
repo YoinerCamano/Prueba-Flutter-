@@ -8,7 +8,7 @@ class BtDevice extends Equatable {
   List<Object?> get props => [id, name];
 }
 
-enum WeightStatus { stable, unstable, negative }
+enum WeightStatus { stable, unstable, negative, overload }
 
 class WeightReading extends Equatable {
   final double? kg;

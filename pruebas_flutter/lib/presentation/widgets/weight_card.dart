@@ -48,6 +48,8 @@ class _WeightCardState extends State<WeightCard> {
         return Colors.orange;
       case WeightStatus.negative:
         return Colors.red;
+      case WeightStatus.overload:
+        return Colors.deepOrange;
     }
   }
 
@@ -59,6 +61,8 @@ class _WeightCardState extends State<WeightCard> {
         return 'Inestable';
       case WeightStatus.negative:
         return 'Negativo';
+      case WeightStatus.overload:
+        return 'Sobrecarga';
     }
   }
 
@@ -130,7 +134,11 @@ class _WeightCardState extends State<WeightCard> {
                   FittedBox(
                     fit: BoxFit.scaleDown,
                     child: Text(
-                      w != null ? '${w.toStringAsFixed(2)} kg' : '--.-- kg',
+                      w != null
+                          ? '${w.toStringAsFixed(2)} kg'
+                          : (widget.weight?.status == WeightStatus.overload
+                              ? '--- kg'
+                              : '--.-- kg'),
                       style: Theme.of(context).textTheme.displayLarge?.copyWith(
                             fontWeight: FontWeight.bold,
                             color: widget.weight != null

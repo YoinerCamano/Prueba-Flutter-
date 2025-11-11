@@ -55,7 +55,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     _connectionBloc.add(conn.StopPolling());
 
     // Iniciar carga después de un pequeño delay
-    Future.delayed(const Duration(milliseconds: 300), () {
+    Future.delayed(const Duration(milliseconds: 50), () {
       if (mounted) {
         _startSequentialLoad();
       }
@@ -155,7 +155,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
 
     // Configurar timeout (5 segundos por comando - aumentado para mayor confiabilidad)
     _timeoutTimer?.cancel();
-    _timeoutTimer = Timer(const Duration(seconds: 5), () {
+    _timeoutTimer = Timer(const Duration(seconds: 1), () {
       if (mounted && _isLoading) {
         print('⏰ TIMEOUT esperando respuesta de $_currentCommand');
         _moveToNextCommand();
@@ -224,7 +224,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     _currentStep++;
 
     // Delay más largo antes del siguiente comando (500ms para dar tiempo al dispositivo)
-    Future.delayed(const Duration(milliseconds: 500), () {
+    Future.delayed(const Duration(milliseconds: 200), () {
       if (mounted) {
         _sendNextCommand();
       }
