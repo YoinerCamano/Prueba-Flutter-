@@ -77,6 +77,26 @@ class CommandRegistry {
     // estrategia 1: tomar el último comando enviado
     if (_pending.isEmpty) return null;
 
+    // Heurística: evitar resolver lecturas de peso/ruido como si fueran
+    // respuestas a comandos de información del dispositivo.
+    // Patrón de peso: "[U?-?99.9]" (con o sin U, signo y decimales)
+    final weightLike = RegExp(r"\[(U?-?\d+\.?\d*\s*)\]");
+    final trimmed = incomingData.trim();
+
+    // Revisar el último comando pendiente sin removerlo aún
+    final lastPending = _pending.last;
+    final isInfoCommand = lastPending.rawCommand == '{TTCSER}' ||
+        lastPending.rawCommand == '{VA}' ||
+        lastPending.rawCommand == '{SACC}' ||
+        lastPending.rawCommand == '{SCLS}' ||
+        lastPending.rawCommand == '{SCAV}';
+
+    // Si estamos esperando info y llegó algo con forma de peso, NO resolver.
+    if (isInfoCommand && weightLike.hasMatch(trimmed)) {
+      // Mantener el comando como pendiente para que llegue la respuesta real
+      return null;
+    }
+
     final last = _pending.last;
     last.responseData = incomingData;
     last.resolvedAt = DateTime.now();
