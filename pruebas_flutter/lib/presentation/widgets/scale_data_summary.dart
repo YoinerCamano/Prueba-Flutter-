@@ -367,6 +367,11 @@ class ScaleDataSummary extends StatelessWidget {
         color = Colors.red;
         icon = Icons.remove_circle;
         break;
+      case WeightStatus.overload:
+        text = 'Sobrecarga';
+        color = Colors.deepOrange;
+        icon = Icons.warning;
+        break;
     }
 
     return Chip(
@@ -391,6 +396,8 @@ class ScaleDataSummary extends StatelessWidget {
         return Colors.orange;
       case WeightStatus.negative:
         return Colors.red;
+      case WeightStatus.overload:
+        return Colors.deepOrange;
     }
   }
 

@@ -96,6 +96,8 @@ class ScaleStatusIcon extends StatelessWidget {
           return Icons.balance;
         case WeightStatus.negative:
           return Icons.remove_circle_outline;
+        case WeightStatus.overload:
+          return Icons.warning_amber;
       }
     }
     return Icons.scale;
@@ -112,6 +114,8 @@ class ScaleStatusIcon extends StatelessWidget {
           return Colors.orange;
         case WeightStatus.negative:
           return Colors.red;
+        case WeightStatus.overload:
+          return Colors.deepOrange;
       }
     }
     return colorScheme.primary;
@@ -143,6 +147,9 @@ class ScaleStatusIcon extends StatelessWidget {
         break;
       case WeightStatus.negative:
         weightColor = Colors.red;
+        break;
+      case WeightStatus.overload:
+        weightColor = Colors.deepOrange;
         break;
     }
 
@@ -212,6 +219,8 @@ class ScaleStatusIcon extends StatelessWidget {
         return Icons.pending;
       case WeightStatus.negative:
         return Icons.remove_circle;
+      case WeightStatus.overload:
+        return Icons.warning;
     }
   }
 
@@ -226,6 +235,8 @@ class ScaleStatusIcon extends StatelessWidget {
           return Colors.orange.withOpacity(0.5);
         case WeightStatus.negative:
           return Colors.red.withOpacity(0.5);
+        case WeightStatus.overload:
+          return Colors.deepOrange.withOpacity(0.5);
       }
     }
     return colorScheme.primary.withOpacity(0.5);
@@ -256,6 +267,8 @@ class ScaleStatusIcon extends StatelessWidget {
           return '~$weightText';
         case WeightStatus.negative:
           return weightText;
+        case WeightStatus.overload:
+          return '--- kg';
       }
     }
 
