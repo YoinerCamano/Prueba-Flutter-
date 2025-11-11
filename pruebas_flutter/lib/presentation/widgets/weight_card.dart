@@ -1,12 +1,44 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../domain/entities.dart';
+import '../blocs/connection/connection_bloc.dart' as conn;
 
-class WeightCard extends StatelessWidget {
+class WeightCard extends StatefulWidget {
   final WeightReading? weight;
   final BatteryStatus? batteryVoltage;
   final BatteryStatus? batteryPercent;
-  const WeightCard(
-      {super.key, this.weight, this.batteryVoltage, this.batteryPercent});
+
+  const WeightCard({
+    super.key,
+    this.weight,
+    this.batteryVoltage,
+    this.batteryPercent,
+  });
+
+  @override
+  State<WeightCard> createState() => _WeightCardState();
+}
+
+class _WeightCardState extends State<WeightCard> {
+  late final conn.ConnectionBloc _connectionBloc;
+
+  @override
+  void initState() {
+    super.initState();
+    // Guardar referencia al bloc antes de usarlo
+    _connectionBloc = context.read<conn.ConnectionBloc>();
+    // 🚀 Iniciar polling cuando se muestra la tarjeta de peso
+    print('🚀 WeightCard montado - Iniciando polling de peso...');
+    _connectionBloc.add(conn.StartPolling());
+  }
+
+  @override
+  void dispose() {
+    // 🛑 Detener polling cuando se oculta la tarjeta
+    print('🛑 WeightCard desmontado - Deteniendo polling de peso...');
+    _connectionBloc.add(conn.StopPolling());
+    super.dispose();
+  }
 
   Color _getWeightColor(WeightStatus status) {
     switch (status) {
@@ -32,9 +64,9 @@ class WeightCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final w = weight?.kg;
-    final bVolt = batteryVoltage?.volts;
-    final bPct = batteryPercent?.percent;
+    final w = widget.weight?.kg;
+    final bVolt = widget.batteryVoltage?.volts;
+    final bPct = widget.batteryPercent?.percent;
 
     return Card(
       elevation: 0,
@@ -101,30 +133,31 @@ class WeightCard extends StatelessWidget {
                       w != null ? '${w.toStringAsFixed(2)} kg' : '--.-- kg',
                       style: Theme.of(context).textTheme.displayLarge?.copyWith(
                             fontWeight: FontWeight.bold,
-                            color: weight != null
-                                ? _getWeightColor(weight!.status)
+                            color: widget.weight != null
+                                ? _getWeightColor(widget.weight!.status)
                                 : null,
                           ),
                     ),
                   ),
                   // Indicador de estado del peso
-                  if (weight != null) ...[
+                  if (widget.weight != null) ...[
                     const SizedBox(height: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 4),
                       decoration: BoxDecoration(
-                        color: _getWeightColor(weight!.status).withOpacity(0.1),
+                        color: _getWeightColor(widget.weight!.status)
+                            .withOpacity(0.1),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color:
-                              _getWeightColor(weight!.status).withOpacity(0.3),
+                          color: _getWeightColor(widget.weight!.status)
+                              .withOpacity(0.3),
                         ),
                       ),
                       child: Text(
-                        _getStatusText(weight!.status),
+                        _getStatusText(widget.weight!.status),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: _getWeightColor(weight!.status),
+                              color: _getWeightColor(widget.weight!.status),
                               fontWeight: FontWeight.w600,
                             ),
                       ),
@@ -135,10 +168,10 @@ class WeightCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             // Timestamp centrado
-            if (weight?.at != null)
+            if (widget.weight?.at != null)
               Center(
                 child: Text(
-                  'Última lectura: ${TimeOfDay.fromDateTime(weight!.at).format(context)}',
+                  'Última lectura: ${TimeOfDay.fromDateTime(widget.weight!.at).format(context)}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),

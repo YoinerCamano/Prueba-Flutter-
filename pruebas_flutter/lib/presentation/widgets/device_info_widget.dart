@@ -189,7 +189,8 @@ class _DeviceInfoWidgetState extends State<DeviceInfoWidget> {
         if (mounted) {
           setState(() {
             cellLoadmVV = '2.0 mV/V'; // Simulado
-            microvoltsPerDivision = '0.1 μV/div'; // Simulado
+            // Requisito: microvoltsPerDivision SIN unidad, solo valor numérico.
+            microvoltsPerDivision = '0.1'; // Simulado (sin "μV/div")
             isLoadingCellSpecs = false;
           });
         }

@@ -28,6 +28,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   bool _waitingForResponse = false;
   Timer? _responseTimeoutTimer;
 
+  // 🚦 FLAG DE SUSPENSIÓN TOTAL DE POLLING DE PESO/BATERÍA
+  // Cuando true: no se envían comandos automáticos {RW}/{BV}/{BC} ni se procesan lecturas de peso
+  bool _pollingSuspended = false;
+
   // 🚀 SECUENCIA INICIAL: Control de comandos de inicio
   int _initialSequenceStep = 0;
   bool _isInitialSequence = false;
@@ -96,12 +100,13 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         _weightRequestCount = 0;
         _batteryRequestCount = 0;
 
-        // 🔄 COMANDOS INICIALES CON SISTEMA SECUENCIAL
-        // Esperar un momento para que la conexión se estabilice
+        // 🔄 NO INICIAR POLLING AUTOMÁTICAMENTE
+        // El polling se iniciará solo cuando se necesite (ej: ver WeightCard)
         await Future.delayed(const Duration(milliseconds: 300));
 
-        print('✅ Conexión estabilizada → Iniciando polling secuencial...');
-        add(StartPolling());
+        print(
+            '✅ Conexión estabilizada → Polling NO iniciado (se inicia bajo demanda)');
+        // add(StartPolling()); // ❌ DESACTIVADO - Solo iniciar cuando se necesite
       } else {
         emit(ConnectionState.error(
             'La conexión no se estableció correctamente'));
@@ -196,13 +201,128 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       return;
     }
 
+    // 🔧 PRIORIDAD 1: Procesar comandos de información del dispositivo
+    // Intentar obtener el último comando enviado (priorizar CommandRegistry)
+    String? lastCommand;
+    if (resolved != null) {
+      lastCommand = resolved.rawCommand;
+    } else {
+      lastCommand = _lastCommandSent;
+    }
+
+    print(
+        '🔍 [$timeStr] lastCommand: "$lastCommand", line: "$line", contains[]: ${line.contains('[')}');
+
+    // Procesar respuestas de comandos de información del dispositivo
+    if (lastCommand != null && line.isNotEmpty) {
+      print('✅ [$timeStr] Procesando comando de info: $lastCommand');
+      // Algunas básculas devuelven la respuesta entre corchetes, ej: "[401474680066]"
+      final cleaned = (line.startsWith('[') && line.endsWith(']'))
+          ? line.substring(1, line.length - 1).trim()
+          : line.trim();
+
+      // Comando {TTCSER} - Número de serie
+      if (lastCommand == '{TTCSER}') {
+        print('📋 [$timeStr] NÚMERO DE SERIE RECIBIDO: "$cleaned"');
+        emit(s.copyWith(serialNumber: cleaned));
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
+
+      // Comando {VA} - Versión de firmware
+      if (lastCommand == '{VA}') {
+        print('🔧 [$timeStr] VERSIÓN DE FIRMWARE RECIBIDA: "$cleaned"');
+        emit(s.copyWith(firmwareVersion: cleaned));
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
+
+      // Comando {SACC} - Código de celda
+      if (lastCommand == '{SACC}') {
+        print('🏷️ [$timeStr] CÓDIGO DE CELDA RECIBIDO: "$cleaned"');
+        emit(s.copyWith(cellCode: cleaned));
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
+
+      // Comando {SCLS} - Especificaciones de celda.
+      // Requisito actual: usar el MISMO valor numérico para ambos campos:
+      //  - `cellLoadmVV` con sufijo ' mV/V'
+      //  - `microvoltsPerDivision` sin unidad (solo número)
+      if (lastCommand == '{SCLS}') {
+        print('⚡ [$timeStr] ESPECIFICACIONES DE CELDA RECIBIDAS: "$cleaned"');
+        // Parseo: separar por espacio o coma y tomar el primer token numérico.
+        final parts = cleaned
+            .split(RegExp(r'[\s,]+'))
+            .where((p) => p.isNotEmpty)
+            .toList();
+        String? rawValue;
+        if (parts.isNotEmpty) {
+          // Aceptar primer elemento como valor base.
+          rawValue = parts[0];
+        }
+        if (rawValue != null) {
+          // Normalizar posible símbolo unitario incluido (ej: "2.0mV/V" o "2.0μV/div")
+          final normalized = rawValue
+              .replaceAll(
+                  RegExp(r'(mV\/V|μV\/div|uV\/div|mV|μV|uV)',
+                      caseSensitive: false),
+                  '')
+              .trim();
+          emit(s.copyWith(
+            cellLoadmVV: '$normalized mV/V',
+            microvoltsPerDivision: normalized, // sin unidad
+          ));
+        } else {
+          print(
+              '⚠️ [$timeStr] No se pudo extraer valor base de SCLS: "$cleaned"');
+        }
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
+
+      // Comando {SCZERO} - Confirmación de reset
+      if (lastCommand == '{SCZERO}') {
+        print('0️⃣ [$timeStr] CONFIRMACIÓN ZERO RECIBIDA: "$cleaned"');
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
+
+      // Comando {SCAV} - Ruido CAD (conversor analógico-digital)
+      if (lastCommand == '{SCAV}') {
+        print('📡 [$timeStr] RUIDO CAD RECIBIDO: "$cleaned"');
+        emit(s.copyWith(adcNoise: cleaned));
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
+    }
+
     // OPTIMIZACIÓN: Procesar solo datos de peso para máxima velocidad
     // Detectar formato [valor], [Uvalor] o [-valor] - PESO PRIORITARIO
-    // CORREGIDO: Permite espacios dentro del valor: [U94.8 ], [79 ], etc.
+    // ⚠️ SOLO procesar como peso si el último comando fue relacionado con peso
     final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*\s*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
-    if (weightMatch != null) {
+    if (weightMatch != null && !_pollingSuspended) {
+      // ✅ Solo procesar como peso si el comando fue {RW}, {BV}, {BC}
+      // Nota: ya NO procesamos cuando lastCommand es null para evitar ruido durante otras operaciones
+      final isPesoCommand = lastCommand == '{RW}' ||
+          lastCommand == '{BV}' ||
+          lastCommand == '{BC}';
+
+      if (!isPesoCommand) {
+        print(
+            '⏭️ [$timeStr] Ignorando valor [$line] - comando actual: $lastCommand (no es comando de peso)');
+        // No desbloquear aquí: seguimos esperando la respuesta real del comando en curso
+        return;
+      }
+
       final fullValueStr =
           (weightMatch.group(1) ?? '').trim(); // Remover espacios
       double? value;
@@ -309,6 +429,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   /// 🔄 Desbloquea el envío del siguiente comando en la secuencia
   void _unlockNextCommand() {
+    if (_pollingSuspended) {
+      // Si está suspendido, no programar siguiente comando
+      return;
+    }
     if (_waitingForResponse) {
       _waitingForResponse = false;
       _responseTimeoutTimer?.cancel();
@@ -325,6 +449,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   /// 📤 Envía el siguiente comando con prioridad al peso
   void _sendNextSequentialCommand({String? forceCommand}) {
+    if (_pollingSuspended) {
+      print('⏸️ Polling suspendido → no se envía comando automático');
+      return;
+    }
     if (_waitingForResponse) return; // Ya hay un comando pendiente
 
     String nextCommand;
@@ -427,9 +555,19 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       // 🔒 BLOQUEO SECUENCIAL: Marcar como esperando respuesta
       _waitingForResponse = true;
 
-      // 🛡️ TIMEOUT DE SEGURIDAD: Si no llega respuesta en 500ms, desbloquear
+      // 🛡️ TIMEOUT DE SEGURIDAD: Variable según tipo de comando
+      // Comandos de información del dispositivo necesitan más tiempo
+      final isDeviceInfoCommand = e.command == '{TTCSER}' ||
+          e.command == '{VA}' ||
+          e.command == '{SACC}' ||
+          e.command == '{SCLS}';
+
+      final timeoutDuration = isDeviceInfoCommand
+          ? const Duration(seconds: 3) // Más tiempo para info del dispositivo
+          : const Duration(milliseconds: 500); // Rápido para peso/batería
+
       _responseTimeoutTimer?.cancel();
-      _responseTimeoutTimer = Timer(const Duration(milliseconds: 500), () {
+      _responseTimeoutTimer = Timer(timeoutDuration, () {
         if (_waitingForResponse) {
           print(
               '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
@@ -484,6 +622,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _pollTimer?.cancel();
     _responseTimeoutTimer?.cancel();
 
+    if (_pollingSuspended) {
+      print('▶️ Reanudando polling (estaba suspendido)');
+    }
+    _pollingSuspended = false;
+
     print('🎯 === INICIANDO POLLING OPTIMIZADO (PESO PRIORITARIO) ===');
     print('📋 Sistema: Secuencial con tracking completo');
     print('📋 Prioridad: {RW} (continuo) + {BV}/{BC} (cada 1 minuto)');
@@ -514,13 +657,17 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   Future<void> _onStopPolling(
       StopPolling e, Emitter<ConnectionState> emit) async {
+    print('🛑 === DETENIENDO POLLING ===');
+
     _pollTimer?.cancel();
     _pollTimer = null;
     _responseTimeoutTimer?.cancel();
     _responseTimeoutTimer = null;
     _waitingForResponse = false;
+    _pollingSuspended = true;
 
-    print('🛑 Polling secuencial detenido');
+    print('🛑 Polling secuencial detenido - Timer cancelado');
+    print('🛑 No se enviarán más comandos automáticos de peso');
   }
 
   /// Nuevo método para verificar conexiones manuales

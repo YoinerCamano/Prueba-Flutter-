@@ -19,6 +19,36 @@ class CommandRegistry {
       key: 'bateria_voltaje',
       description: 'Voltaje de batería',
     ),
+    '{TTCSER}': const DeviceCommand(
+      code: '{TTCSER}',
+      key: 'numero_serie',
+      description: 'Número de serie',
+    ),
+    '{VA}': const DeviceCommand(
+      code: '{VA}',
+      key: 'version_firmware',
+      description: 'Versión de firmware',
+    ),
+    '{SACC}': const DeviceCommand(
+      code: '{SACC}',
+      key: 'codigo_celda',
+      description: 'Código de celda',
+    ),
+    '{SCLS}': const DeviceCommand(
+      code: '{SCLS}',
+      key: 'especificaciones_celda',
+      description: 'Especificaciones de celda',
+    ),
+    '{SCZERO}': const DeviceCommand(
+      code: '{SCZERO}',
+      key: 'reset_zero',
+      description: 'Resetear báscula a cero',
+    ),
+    '{SCAV}': const DeviceCommand(
+      code: '{SCAV}',
+      key: 'ruido_cad',
+      description: 'Ruido CAD (conversor A/D)',
+    ),
   };
 
   // Lista de comandos enviados que están "pendientes" de respuesta

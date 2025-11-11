@@ -26,24 +26,66 @@ class Connected extends ConnectionState {
   final WeightReading? weight;
   final BatteryStatus? batteryVoltage; // Para voltaje {BV}
   final BatteryStatus? batteryPercent; // Para porcentaje {BC}
-  const Connected(
-      {required this.device,
-      this.weight,
-      this.batteryVoltage,
-      this.batteryPercent});
 
-  Connected copyWith(
-          {WeightReading? weight,
-          BatteryStatus? batteryVoltage,
-          BatteryStatus? batteryPercent}) =>
+  // 🔧 Información técnica del dispositivo
+  final String? serialNumber; // {TTCSER}
+  final String? firmwareVersion; // {VA}
+  final String? cellCode; // {SACC}
+  final String? cellLoadmVV; // {SCLS} - Primer valor
+  final String? microvoltsPerDivision; // {SCLS} - Segundo valor
+  final String? adcNoise; // {SCAV} - Ruido CAD (conversor A/D)
+
+  const Connected({
+    required this.device,
+    this.weight,
+    this.batteryVoltage,
+    this.batteryPercent,
+    this.serialNumber,
+    this.firmwareVersion,
+    this.cellCode,
+    this.cellLoadmVV,
+    this.microvoltsPerDivision,
+    this.adcNoise,
+  });
+
+  Connected copyWith({
+    WeightReading? weight,
+    BatteryStatus? batteryVoltage,
+    BatteryStatus? batteryPercent,
+    String? serialNumber,
+    String? firmwareVersion,
+    String? cellCode,
+    String? cellLoadmVV,
+    String? microvoltsPerDivision,
+    String? adcNoise,
+  }) =>
       Connected(
-          device: device,
-          weight: weight ?? this.weight,
-          batteryVoltage: batteryVoltage ?? this.batteryVoltage,
-          batteryPercent: batteryPercent ?? this.batteryPercent);
+        device: device,
+        weight: weight ?? this.weight,
+        batteryVoltage: batteryVoltage ?? this.batteryVoltage,
+        batteryPercent: batteryPercent ?? this.batteryPercent,
+        serialNumber: serialNumber ?? this.serialNumber,
+        firmwareVersion: firmwareVersion ?? this.firmwareVersion,
+        cellCode: cellCode ?? this.cellCode,
+        cellLoadmVV: cellLoadmVV ?? this.cellLoadmVV,
+        microvoltsPerDivision:
+            microvoltsPerDivision ?? this.microvoltsPerDivision,
+        adcNoise: adcNoise ?? this.adcNoise,
+      );
 
   @override
-  List<Object?> get props => [device, weight, batteryVoltage, batteryPercent];
+  List<Object?> get props => [
+        device,
+        weight,
+        batteryVoltage,
+        batteryPercent,
+        serialNumber,
+        firmwareVersion,
+        cellCode,
+        cellLoadmVV,
+        microvoltsPerDivision,
+        adcNoise,
+      ];
 }
 
 class ConnectionError extends ConnectionState {
