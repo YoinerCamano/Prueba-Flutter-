@@ -216,19 +216,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     // Procesar respuestas de comandos de información del dispositivo
     if (lastCommand != null && line.isNotEmpty) {
       print('✅ [$timeStr] Procesando comando de info: $lastCommand');
-      // Si llega un valor con forma de peso mientras esperamos info, ignorar
-      final weightLike = RegExp(r'\[(U?-?\d+\.?\d*\s*)\]');
-      if ((lastCommand == '{TTCSER}' ||
-              lastCommand == '{VA}' ||
-              lastCommand == '{SACC}' ||
-              lastCommand == '{SCLS}' ||
-              lastCommand == '{SCAV}') &&
-          weightLike.hasMatch(line)) {
-        print(
-            '⏭️ [$timeStr] Ignorando línea con forma de PESO mientras esperamos $lastCommand: "$line"');
-        // No desbloquear ni limpiar: seguimos esperando la respuesta real
-        return;
-      }
+      // Nota: Algunas respuestas de info vienen entre corchetes ej. "[401474680066]".
+      // No filtrar por patrón de peso aquí; dejamos que cada caso procese su respuesta.
       // Algunas básculas devuelven la respuesta entre corchetes, ej: "[401474680066]"
       final cleaned = (line.startsWith('[') && line.endsWith(']'))
           ? line.substring(1, line.length - 1).trim()
