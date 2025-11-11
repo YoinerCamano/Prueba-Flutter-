@@ -312,13 +312,15 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     final weightMatch = weightRegex.firstMatch(line);
 
     if (weightMatch != null && !_pollingSuspended) {
-      // ✅ Solo procesar como peso si el comando fue {RW}, {BV}, {BC}
-      // Nota: ya NO procesamos cuando lastCommand es null para evitar ruido durante otras operaciones
-      final isPesoCommand = lastCommand == '{RW}';
+      // ✅ Procesar valores numéricos si el comando fue {RW}, {BV}, {BC}
+      // Nota: ya NO procesamos cuando lastCommand is null para evitar ruido durante otras operaciones
+      final isDataCommand = lastCommand == '{RW}' ||
+          lastCommand == '{BV}' ||
+          lastCommand == '{BC}';
 
-      if (!isPesoCommand) {
+      if (!isDataCommand) {
         print(
-            '⏭️ [$timeStr] Ignorando valor [$line] - comando actual: $lastCommand (no es comando de peso)');
+            '⏭️ [$timeStr] Ignorando valor [$line] - comando actual: $lastCommand (no es comando de datos)');
         // No desbloquear aquí: seguimos esperando la respuesta real del comando en curso
         return;
       }
