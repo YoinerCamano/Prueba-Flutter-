@@ -314,9 +314,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (weightMatch != null && !_pollingSuspended) {
       // ✅ Solo procesar como peso si el comando fue {RW}, {BV}, {BC}
       // Nota: ya NO procesamos cuando lastCommand es null para evitar ruido durante otras operaciones
-      final isPesoCommand = lastCommand == '{RW}' ||
-          lastCommand == '{BV}' ||
-          lastCommand == '{BC}';
+      final isPesoCommand = lastCommand == '{RW}';
 
       if (!isPesoCommand) {
         print(
