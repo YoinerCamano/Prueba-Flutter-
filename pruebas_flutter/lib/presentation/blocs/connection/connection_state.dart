@@ -34,6 +34,7 @@ class Connected extends ConnectionState {
   final String? cellLoadmVV; // {SCLS} - Primer valor
   final String? microvoltsPerDivision; // {SCLS} - Segundo valor
   final String? adcNoise; // {SCAV} - Ruido CAD (conversor A/D)
+  final String? weightUnit; // {MSWU} - Unidad de peso configurada (kg/lb)
 
   const Connected({
     required this.device,
@@ -46,6 +47,7 @@ class Connected extends ConnectionState {
     this.cellLoadmVV,
     this.microvoltsPerDivision,
     this.adcNoise,
+    this.weightUnit,
   });
 
   Connected copyWith({
@@ -58,6 +60,7 @@ class Connected extends ConnectionState {
     String? cellLoadmVV,
     String? microvoltsPerDivision,
     String? adcNoise,
+    String? weightUnit,
   }) =>
       Connected(
         device: device,
@@ -71,6 +74,7 @@ class Connected extends ConnectionState {
         microvoltsPerDivision:
             microvoltsPerDivision ?? this.microvoltsPerDivision,
         adcNoise: adcNoise ?? this.adcNoise,
+        weightUnit: weightUnit ?? this.weightUnit,
       );
 
   @override
@@ -85,6 +89,7 @@ class Connected extends ConnectionState {
         cellLoadmVV,
         microvoltsPerDivision,
         adcNoise,
+        weightUnit,
       ];
 }
 

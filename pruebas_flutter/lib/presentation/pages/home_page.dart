@@ -9,6 +9,7 @@ import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
 import 'device_info_page.dart';
+import 'configuration_page.dart';
 // import '../widgets/device_info_loader.dart'; // Reemplazado por DeviceInfoPage
 // import '../widgets/device_info_card.dart'; // Reemplazado por DeviceInfoLoader
 // import '../widgets/scale_status_icon.dart'; // DESACTIVADO
@@ -78,6 +79,19 @@ class _HomePageState extends State<HomePage> {
                   tooltip: 'Acerca del dispositivo',
                   onPressed: () => _showDeviceInfo(context, connectionState),
                   icon: const Icon(Icons.info_outline),
+                );
+              }
+              return const SizedBox.shrink(); // No mostrar si no está conectado
+            },
+          ),
+          // ⚙️ Icono de configuración
+          BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+            builder: (context, connectionState) {
+              if (connectionState is conn.Connected) {
+                return IconButton(
+                  tooltip: 'Configuración',
+                  onPressed: () => _showConfiguration(context, connectionState),
+                  icon: const Icon(Icons.settings),
                 );
               }
               return const SizedBox.shrink(); // No mostrar si no está conectado
@@ -566,6 +580,15 @@ class _HomePageState extends State<HomePage> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => const DeviceInfoPage(),
+      ),
+    );
+  }
+
+  /// ⚙️ Navegar a la página de configuración
+  void _showConfiguration(BuildContext context, conn.Connected state) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => const ConfigurationPage(),
       ),
     );
   }

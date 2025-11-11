@@ -303,6 +303,27 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         _unlockNextCommand();
         return;
       }
+
+      // Comando {MSWU} - Unidad de peso (0=kg, 1=lb)
+      if (lastCommand == '{MSWU}') {
+        print('⚖️ [$timeStr] UNIDAD DE PESO RECIBIDA: "$cleaned"');
+        final String unit;
+        if (cleaned == '0') {
+          unit = 'kg';
+        } else if (cleaned == '1') {
+          unit = 'lb';
+        } else {
+          unit = 'desconocida';
+        }
+        print('⚖️ [$timeStr] Parseado como: $unit (actual: ${s.weightUnit})');
+        final newState = s.copyWith(weightUnit: unit);
+        print(
+            '⚖️ [$timeStr] Emitiendo nuevo estado con weightUnit: ${newState.weightUnit}');
+        emit(newState);
+        _lastCommandSent = null; // Limpiar tracking
+        _unlockNextCommand();
+        return;
+      }
     }
 
     // OPTIMIZACIÓN: Procesar solo datos de peso para máxima velocidad
@@ -573,34 +594,50 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       print('📤 [$timeStr] ENVIANDO: ${e.command} → Esperando: $expectedType');
 
       // 🔒 BLOQUEO SECUENCIAL: Marcar como esperando respuesta
-      _waitingForResponse = true;
+      // EXCEPCIÓN: Comandos de escritura {MSWU0} y {MSWU1} no esperan respuesta
+      final isWriteOnlyCommand =
+          e.command == '{MSWU0}' || e.command == '{MSWU1}';
+
+      if (!isWriteOnlyCommand) {
+        _waitingForResponse = true;
+      }
 
       // 🛡️ TIMEOUT DE SEGURIDAD: Variable según tipo de comando
       // Comandos de información del dispositivo necesitan más tiempo
       final isDeviceInfoCommand = e.command == '{TTCSER}' ||
           e.command == '{VA}' ||
           e.command == '{SACC}' ||
-          e.command == '{SCLS}';
+          e.command == '{SCLS}' ||
+          e.command == '{SCAV}' ||
+          e.command == '{MSWU}'; // Consulta de unidad también necesita tiempo
 
       final timeoutDuration = isDeviceInfoCommand
           ? const Duration(seconds: 3) // Más tiempo para info del dispositivo
           : const Duration(milliseconds: 500); // Rápido para peso/batería
 
-      _responseTimeoutTimer?.cancel();
-      _responseTimeoutTimer = Timer(timeoutDuration, () {
-        if (_waitingForResponse) {
-          print(
-              '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
-          _waitingForResponse = false;
-          _sendNextSequentialCommand();
-        }
-      });
+      if (!isWriteOnlyCommand) {
+        _responseTimeoutTimer?.cancel();
+        _responseTimeoutTimer = Timer(timeoutDuration, () {
+          if (_waitingForResponse) {
+            print(
+                '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
+            _waitingForResponse = false;
+            _sendNextSequentialCommand();
+          }
+        });
+      }
 
       // OPTIMIZACIÓN: Envío directo por BLE
       await repo.sendCommand(e.command);
 
-      print(
-          '✅ [$timeStr] COMANDO ENVIADO: ${e.command} → Aguardando respuesta...');
+      if (isWriteOnlyCommand) {
+        print(
+            '✅ [$timeStr] COMANDO WRITE-ONLY ENVIADO: ${e.command} (sin esperar respuesta)');
+        _lastCommandSent = null; // Limpiar inmediatamente
+      } else {
+        print(
+            '✅ [$timeStr] COMANDO ENVIADO: ${e.command} → Aguardando respuesta...');
+      }
     } catch (err) {
       final errorMsg = err.toString().toLowerCase();
 

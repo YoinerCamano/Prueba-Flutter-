@@ -49,6 +49,21 @@ class CommandRegistry {
       key: 'ruido_cad',
       description: 'Ruido CAD (conversor A/D)',
     ),
+    '{MSWU}': const DeviceCommand(
+      code: '{MSWU}',
+      key: 'unidad_peso',
+      description: 'Consultar unidad de peso',
+    ),
+    '{MSWU0}': const DeviceCommand(
+      code: '{MSWU0}',
+      key: 'cambiar_unidad_kg',
+      description: 'Cambiar unidad a kilogramos',
+    ),
+    '{MSWU1}': const DeviceCommand(
+      code: '{MSWU1}',
+      key: 'cambiar_unidad_lb',
+      description: 'Cambiar unidad a libras',
+    ),
   };
 
   // Lista de comandos enviados que están "pendientes" de respuesta
