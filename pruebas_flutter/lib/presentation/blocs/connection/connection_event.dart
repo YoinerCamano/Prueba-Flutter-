@@ -1,5 +1,25 @@
 part of 'connection_bloc.dart';
 
+/// Enum para comandos de la báscula con mayor claridad y type-safety
+enum ScaleCommand {
+  readWeight('{RW}'),
+  batteryVoltage('{BV}'),
+  batteryCapacity('{BC}'),
+  serialNumber('{TTCSER}'),
+  firmwareVersion('{VA}'),
+  cellCode('{SACC}'),
+  cellSpecifications('{SCLS}'),
+  resetZero('{SCZERO}'),
+  adcNoise('{SCAV}'),
+  weightUnit('{MSWU}'),
+  setUnitKg('{MSWU0}'),
+  setUnitLb('{MSWU1}'),
+  enableAcknowledgment('{ZA1}'); // Habilita respuestas de confirmación "^"
+
+  const ScaleCommand(this.code);
+  final String code;
+}
+
 abstract class ConnectionEvent extends Equatable {
   @override
   List<Object?> get props => [];

@@ -73,7 +73,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       // Verificar conexión
       bool connected = false;
       for (int i = 0; i < 2; i++) {
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 200));
         connected = await repo.isConnected();
         if (connected) break;
       }
@@ -102,7 +102,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
         // 🔄 NO INICIAR POLLING AUTOMÁTICAMENTE
         // El polling se iniciará solo cuando se necesite (ej: ver WeightCard)
-        await Future.delayed(const Duration(milliseconds: 300));
+        await Future.delayed(const Duration(milliseconds: 100));
 
         print(
             '✅ Conexión estabilizada → Polling NO iniciado (se inicia bajo demanda)');
@@ -202,12 +202,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     }
 
     // 🔧 PRIORIDAD 1: Procesar comandos de información del dispositivo
-    // Intentar obtener el último comando enviado (priorizar CommandRegistry)
-    String? lastCommand;
-    if (resolved != null) {
+    // Usar _lastCommandSent como fuente de verdad para evitar problemas con LIFO del registry
+    String? lastCommand = _lastCommandSent;
+
+    // Si no hay comando en tracking local, usar el registry como fallback
+    if (lastCommand == null && resolved != null) {
       lastCommand = resolved.rawCommand;
-    } else {
-      lastCommand = _lastCommandSent;
     }
 
     print(
@@ -304,7 +304,35 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         return;
       }
 
-      // Comando {MSWU} - Unidad de peso (0=kg, 1=lb)
+      // Comando {ZA1} - Habilitar confirmación de comandos
+      if (lastCommand == '{ZA1}') {
+        if (cleaned == '^') {
+          print(
+              '✅ [$timeStr] CONFIRMACIÓN {ZA1} RECIBIDA - Respuestas habilitadas');
+          _lastCommandSent = null;
+          _unlockNextCommand();
+          return;
+        }
+      }
+
+      // Comando {MSWU0} o {MSWU1} - Cambio de unidad (solo confirmación ^)
+      if (lastCommand == '{MSWU0}' || lastCommand == '{MSWU1}') {
+        if (cleaned == '^') {
+          final newUnit = lastCommand == '{MSWU0}' ? 'kg' : 'lb';
+          print('✅ [$timeStr] CONFIRMACIÓN CAMBIO UNIDAD → $newUnit');
+          final newState = s.copyWith(weightUnit: newUnit);
+          emit(newState);
+          _lastCommandSent = null;
+          _unlockNextCommand();
+          return;
+        } else {
+          print(
+              '⚠️ [$timeStr] Respuesta inesperada "$cleaned" para ${lastCommand} - Esperaba "^"');
+          return;
+        }
+      }
+
+      // Comando {MSWU} - Consulta de unidad de peso (responde 0=kg, 1=lb)
       if (lastCommand == '{MSWU}') {
         print('⚖️ [$timeStr] UNIDAD DE PESO RECIBIDA: "$cleaned"');
         final String unit;
@@ -313,7 +341,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         } else if (cleaned == '1') {
           unit = 'lb';
         } else {
-          unit = 'desconocida';
+          print(
+              '⚠️ [$timeStr] Valor inesperado "$cleaned" para consulta de unidad');
+          return;
         }
         print('⚖️ [$timeStr] Parseado como: $unit (actual: ${s.weightUnit})');
         final newState = s.copyWith(weightUnit: unit);
@@ -339,7 +369,6 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
             weight: WeightReading(
                 kg: null, at: DateTime.now(), status: WeightStatus.overload)));
         _lastCommandSent = null;
-        return;
       }
     }
 
@@ -349,9 +378,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (weightMatch != null && !_pollingSuspended) {
       // ✅ Procesar valores numéricos si el comando fue {RW}, {BV}, {BC}
       // Nota: ya NO procesamos cuando lastCommand is null para evitar ruido durante otras operaciones
-      final isDataCommand = lastCommand == '{RW}' ||
-          lastCommand == '{BV}' ||
-          lastCommand == '{BC}';
+      final isDataCommand = [
+        ScaleCommand.readWeight.code,
+        ScaleCommand.batteryVoltage.code,
+        ScaleCommand.batteryCapacity.code,
+      ].contains(lastCommand);
 
       if (!isDataCommand) {
         print(
@@ -482,7 +513,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       print('🔓 Respuesta recibida → Desbloqueando siguiente comando');
 
       // Programar el siguiente comando con un delay mínimo
-      Future.delayed(const Duration(milliseconds: 100), () {
+      Future.delayed(const Duration(milliseconds: 50), () {
         _sendNextSequentialCommand();
       });
     }
@@ -500,13 +531,14 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     // 🚀 SECUENCIA INICIAL: Comandos específicos al inicio
     if (_isInitialSequence) {
-      final initialCommands = ['{RW}', '{BV}', '{BC}'];
+      final initialCommands = ['{ZA1}', '{MSWU}', '{RW}', '{BV}', '{BC}'];
 
       if (_initialSequenceStep < initialCommands.length) {
         nextCommand = initialCommands[_initialSequenceStep];
         _initialSequenceStep++;
 
-        print('🚀 Secuencia inicial ($_initialSequenceStep/3): $nextCommand');
+        print(
+            '🚀 Secuencia inicial ($_initialSequenceStep/${initialCommands.length}): $nextCommand');
 
         // Si completamos la secuencia inicial, cambiar a modo normal
         if (_initialSequenceStep >= initialCommands.length) {
@@ -594,13 +626,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       print('📤 [$timeStr] ENVIANDO: ${e.command} → Esperando: $expectedType');
 
       // 🔒 BLOQUEO SECUENCIAL: Marcar como esperando respuesta
-      // EXCEPCIÓN: Comandos de escritura {MSWU0} y {MSWU1} no esperan respuesta
-      final isWriteOnlyCommand =
-          e.command == '{MSWU0}' || e.command == '{MSWU1}';
-
-      if (!isWriteOnlyCommand) {
-        _waitingForResponse = true;
-      }
+      // Todos los comandos ahora esperan respuesta gracias a {ZA1}
+      _waitingForResponse = true;
 
       // 🛡️ TIMEOUT DE SEGURIDAD: Variable según tipo de comando
       // Comandos de información del dispositivo necesitan más tiempo
@@ -609,35 +636,30 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           e.command == '{SACC}' ||
           e.command == '{SCLS}' ||
           e.command == '{SCAV}' ||
-          e.command == '{MSWU}'; // Consulta de unidad también necesita tiempo
+          e.command == '{MSWU}' ||
+          e.command == '{ZA1}' ||
+          e.command == '{MSWU0}' ||
+          e.command == '{MSWU1}';
 
       final timeoutDuration = isDeviceInfoCommand
-          ? const Duration(seconds: 3) // Más tiempo para info del dispositivo
-          : const Duration(milliseconds: 500); // Rápido para peso/batería
+          ? const Duration(
+              milliseconds: 1500) // Optimizado para info del dispositivo
+          : const Duration(milliseconds: 400); // Rápido para peso/batería
 
-      if (!isWriteOnlyCommand) {
-        _responseTimeoutTimer?.cancel();
-        _responseTimeoutTimer = Timer(timeoutDuration, () {
-          if (_waitingForResponse) {
-            print(
-                '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
-            _waitingForResponse = false;
-            _sendNextSequentialCommand();
-          }
-        });
-      }
+      _responseTimeoutTimer?.cancel();
+      _responseTimeoutTimer = Timer(timeoutDuration, () {
+        if (_waitingForResponse) {
+          print(
+              '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
+          _waitingForResponse = false;
+          _sendNextSequentialCommand();
+        }
+      });
 
       // OPTIMIZACIÓN: Envío directo por BLE
       await repo.sendCommand(e.command);
-
-      if (isWriteOnlyCommand) {
-        print(
-            '✅ [$timeStr] COMANDO WRITE-ONLY ENVIADO: ${e.command} (sin esperar respuesta)');
-        _lastCommandSent = null; // Limpiar inmediatamente
-      } else {
-        print(
-            '✅ [$timeStr] COMANDO ENVIADO: ${e.command} → Aguardando respuesta...');
-      }
+      print(
+          '✅ [$timeStr] COMANDO ENVIADO: ${e.command} → Aguardando respuesta...');
     } catch (err) {
       final errorMsg = err.toString().toLowerCase();
 

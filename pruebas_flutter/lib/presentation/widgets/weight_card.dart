@@ -62,7 +62,7 @@ class _WeightCardState extends State<WeightCard> {
       case WeightStatus.negative:
         return 'Negativo';
       case WeightStatus.overload:
-        return 'Sobrecarga';
+        return '-------';
     }
   }
 

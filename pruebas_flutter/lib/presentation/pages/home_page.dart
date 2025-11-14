@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../core/bluetooth_debug.dart';
 import '../../domain/entities.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
@@ -371,30 +370,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _runDiagnostic() async {
-    print('🔍 === EJECUTANDO DIAGNÓSTICO DESDE UI ===');
-
-    // Mostrar indicador de progreso
+    print('🔍 === DIAGNÓSTICO BLUETOOTH ===');
+    // Funcionalidad de diagnóstico deshabilitada temporalmente
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text(
-            '🔍 Ejecutando diagnóstico Bluetooth... Revisa la consola para detalles.'),
-        duration: Duration(seconds: 3),
+        content: Text('⚠️ Diagnóstico no disponible en esta versión'),
+        duration: Duration(seconds: 2),
       ),
     );
-
-    // Ejecutar diagnóstico en background
-    await BluetoothDebug.runFullDiagnostic();
-
-    // Mostrar resultado
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              '✅ Diagnóstico completado. Revisa la consola para los resultados.'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-    }
   }
 
   void _connect(BtDevice d) {

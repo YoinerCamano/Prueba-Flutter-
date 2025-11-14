@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
-import '../core/s3_connection_helper.dart';
 import '../domain/bluetooth_repository.dart';
 import '../domain/entities.dart';
 
@@ -71,9 +70,9 @@ class BluetoothAdapterSppImproved {
       await ensureOn();
       await disconnect(); // Limpiar conexiones previas
 
-      // Usar el helper para la conexión mejorada
-      print('🔗 Usando estrategia de conexión mejorada...');
-      final conn = await S3ConnectionHelper.connectWithRetries(address);
+      // Conexión directa sin helper
+      print('🔗 Conectando a dispositivo: $address');
+      final conn = await BluetoothConnection.toAddress(address);
 
       _connection = conn;
 
