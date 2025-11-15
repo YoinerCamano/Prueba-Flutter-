@@ -9,6 +9,10 @@ class MeasurementHistoryWidget extends StatelessWidget {
   final DateTime? startDate;
   final DateTime? endDate;
   final int limit;
+  final bool selectionMode;
+  final Set<String> selectedIds;
+  final Function(String id, bool selected)? onSelectionChanged;
+  final Function(List<String> allIds)? onSelectAll;
 
   const MeasurementHistoryWidget({
     super.key,
@@ -17,6 +21,10 @@ class MeasurementHistoryWidget extends StatelessWidget {
     this.startDate,
     this.endDate,
     this.limit = 50,
+    this.selectionMode = false,
+    this.selectedIds = const {},
+    this.onSelectionChanged,
+    this.onSelectAll,
   });
 
   @override
@@ -66,28 +74,47 @@ class MeasurementHistoryWidget extends StatelessWidget {
           );
         }
 
+        // Notificar los IDs disponibles para la función "seleccionar todos"
+        if (selectionMode && onSelectAll != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            final allIds = measurements.map((m) => m['id'] as String).toList();
+            onSelectAll!(allIds);
+          });
+        }
+
         return ListView.builder(
           itemCount: measurements.length,
           itemBuilder: (context, index) {
             final measurement = measurements[index];
+            final measurementId = measurement['id'] as String;
             final weight = measurement['weight'] ?? 0.0;
             final unit = measurement['unit'] ?? 'kg';
             final timestamp =
                 measurement['timestamp'] ?? measurement['createdAt'];
+            final isSelected = selectedIds.contains(measurementId);
 
             return Card(
               margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              color: isSelected ? Colors.blue.shade50 : null,
               child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.blue,
-                  child: Text(
-                    '${index + 1}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
+                leading: selectionMode
+                    ? Checkbox(
+                        value: isSelected,
+                        onChanged: (selected) {
+                          onSelectionChanged?.call(
+                              measurementId, selected ?? false);
+                        },
+                      )
+                    : CircleAvatar(
+                        backgroundColor: Colors.blue,
+                        child: Text(
+                          '${index + 1}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
                 title: Text(
                   '$weight $unit',
                   style: const TextStyle(
@@ -99,47 +126,56 @@ class MeasurementHistoryWidget extends StatelessWidget {
                   _formatTimestamp(timestamp),
                   style: const TextStyle(fontSize: 14),
                 ),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete, color: Colors.red),
-                  onPressed: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('Eliminar pesaje'),
-                        content: const Text('¿Eliminar este registro?'),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('Cancelar'),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('Eliminar',
-                                style: TextStyle(color: Colors.red)),
-                          ),
-                        ],
-                      ),
-                    );
+                trailing: selectionMode
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () async {
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Eliminar pesaje'),
+                              content: const Text('¿Eliminar este registro?'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () =>
+                                      Navigator.pop(context, false),
+                                  child: const Text('Cancelar'),
+                                ),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context, true),
+                                  child: const Text('Eliminar',
+                                      style: TextStyle(color: Colors.red)),
+                                ),
+                              ],
+                            ),
+                          );
 
-                    if (confirm == true && context.mounted) {
-                      try {
-                        await firebaseService
-                            .deleteMeasurement(measurement['id']);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Pesaje eliminado')),
-                          );
-                        }
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Error: $e')),
-                          );
-                        }
+                          if (confirm == true && context.mounted) {
+                            try {
+                              await firebaseService
+                                  .deleteMeasurement(measurementId);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('Pesaje eliminado')),
+                                );
+                              }
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Error: $e')),
+                                );
+                              }
+                            }
+                          }
+                        },
+                      ),
+                onTap: selectionMode
+                    ? () {
+                        onSelectionChanged?.call(measurementId, !isSelected);
                       }
-                    }
-                  },
-                ),
+                    : null,
               ),
             );
           },

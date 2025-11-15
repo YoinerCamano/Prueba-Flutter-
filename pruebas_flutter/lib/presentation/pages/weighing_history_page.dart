@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../core/firebase_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../widgets/firebase_widgets.dart';
 
@@ -19,6 +20,9 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
   DateFilter _dateFilter = DateFilter.none;
   DateTime? _customStartDate;
   DateTime? _customEndDate;
+  bool _selectionMode = false;
+  final Set<String> _selectedIds = {};
+  List<String> _allAvailableIds = [];
 
   DateTime? get _effectiveStartDate {
     switch (_dateFilter) {
@@ -61,55 +65,98 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Historial de Pesajes'),
+        title: Text(_selectionMode
+            ? '${_selectedIds.length} seleccionados'
+            : 'Historial de Pesajes'),
+        leading: _selectionMode
+            ? IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () {
+                  setState(() {
+                    _selectionMode = false;
+                    _selectedIds.clear();
+                  });
+                },
+              )
+            : null,
         actions: [
-          PopupMenuButton<int>(
-            tooltip: 'Cantidad a mostrar',
-            icon: const Icon(Icons.filter_list),
-            onSelected: (value) {
-              setState(() {
-                _limit = value;
-              });
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 20,
-                child: Text(
-                  'Últimos 20',
-                  style: TextStyle(
-                    fontWeight: _limit == 20 ? FontWeight.bold : null,
+          if (_selectionMode) ...[
+            IconButton(
+              icon: const Icon(Icons.select_all),
+              tooltip: 'Seleccionar todos',
+              onPressed: _allAvailableIds.isEmpty
+                  ? null
+                  : () {
+                      setState(() {
+                        _selectedIds.addAll(_allAvailableIds);
+                      });
+                    },
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete),
+              tooltip: 'Eliminar seleccionados',
+              onPressed: _selectedIds.isEmpty
+                  ? null
+                  : () => _deleteSelectedMeasurements(context),
+            ),
+          ] else ...[
+            IconButton(
+              icon: const Icon(Icons.checklist),
+              tooltip: 'Selección múltiple',
+              onPressed: () {
+                setState(() {
+                  _selectionMode = true;
+                });
+              },
+            ),
+            PopupMenuButton<int>(
+              tooltip: 'Cantidad a mostrar',
+              icon: const Icon(Icons.filter_list),
+              onSelected: (value) {
+                setState(() {
+                  _limit = value;
+                });
+              },
+              itemBuilder: (context) => [
+                PopupMenuItem(
+                  value: 20,
+                  child: Text(
+                    'Últimos 20',
+                    style: TextStyle(
+                      fontWeight: _limit == 20 ? FontWeight.bold : null,
+                    ),
                   ),
                 ),
-              ),
-              PopupMenuItem(
-                value: 50,
-                child: Text(
-                  'Últimos 50',
-                  style: TextStyle(
-                    fontWeight: _limit == 50 ? FontWeight.bold : null,
+                PopupMenuItem(
+                  value: 50,
+                  child: Text(
+                    'Últimos 50',
+                    style: TextStyle(
+                      fontWeight: _limit == 50 ? FontWeight.bold : null,
+                    ),
                   ),
                 ),
-              ),
-              PopupMenuItem(
-                value: 100,
-                child: Text(
-                  'Últimos 100',
-                  style: TextStyle(
-                    fontWeight: _limit == 100 ? FontWeight.bold : null,
+                PopupMenuItem(
+                  value: 100,
+                  child: Text(
+                    'Últimos 100',
+                    style: TextStyle(
+                      fontWeight: _limit == 100 ? FontWeight.bold : null,
+                    ),
                   ),
                 ),
-              ),
-              PopupMenuItem(
-                value: 200,
-                child: Text(
-                  'Últimos 200',
-                  style: TextStyle(
-                    fontWeight: _limit == 200 ? FontWeight.bold : null,
+                PopupMenuItem(
+                  value: 200,
+                  child: Text(
+                    'Últimos 200',
+                    style: TextStyle(
+                      fontWeight: _limit == 200 ? FontWeight.bold : null,
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            ),
+          ],
         ],
       ),
       body: Column(
@@ -262,11 +309,78 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
               startDate: _effectiveStartDate,
               endDate: _effectiveEndDate,
               limit: _limit,
+              selectionMode: _selectionMode,
+              selectedIds: _selectedIds,
+              onSelectionChanged: (id, selected) {
+                setState(() {
+                  if (selected) {
+                    _selectedIds.add(id);
+                  } else {
+                    _selectedIds.remove(id);
+                  }
+                });
+              },
+              onSelectAll: (allIds) {
+                setState(() {
+                  _allAvailableIds = allIds;
+                });
+              },
             ),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _deleteSelectedMeasurements(BuildContext context) async {
+    final count = _selectedIds.length;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Eliminar pesajes'),
+        content: Text('¿Eliminar $count pesajes seleccionados?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && mounted) {
+      try {
+        final firebaseService = FirebaseProvider.of(context);
+        await firebaseService.deleteMultipleMeasurements(_selectedIds.toList());
+
+        setState(() {
+          _selectedIds.clear();
+          _selectionMode = false;
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ $count pesajes eliminados correctamente'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('❌ Error: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
   }
 
   Future<void> _selectCustomDateRange(BuildContext context) async {

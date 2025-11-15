@@ -191,6 +191,22 @@ class FirebaseService {
     }
   }
 
+  /// Elimina múltiples mediciones en lote
+  Future<void> deleteMultipleMeasurements(List<String> measurementIds) async {
+    try {
+      if (measurementIds.isEmpty) return;
+
+      final batch = _firestore.batch();
+      for (final id in measurementIds) {
+        batch.delete(_firestore.collection(_measurementsCollection).doc(id));
+      }
+      await batch.commit();
+    } catch (e) {
+      print('Error eliminando mediciones múltiples: $e');
+      rethrow;
+    }
+  }
+
   /// Elimina una sesión y todas sus mediciones
   Future<void> deleteSession(String sessionId) async {
     try {

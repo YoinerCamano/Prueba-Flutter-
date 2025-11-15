@@ -3,10 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'core/firebase_provider.dart';
 import 'data/bluetooth_repository_spp.dart';
 import 'data/ble/ble_adapter.dart';
 import 'data/ble/bluetooth_repository_ble.dart';
 import 'data/datasources/command_registry.dart';
+import 'data/firebase/firebase_service.dart';
 import 'domain/bluetooth_repository.dart';
 import 'presentation/blocs/connection/connection_bloc.dart';
 import 'presentation/blocs/scan/scan_cubit.dart';
@@ -74,6 +78,13 @@ Future<void> _ensurePermissions() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Inicializar Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  print('✅ Firebase inicializado correctamente');
+
   await _ensurePermissions();
 
   final BluetoothRepository sppRepo =
@@ -93,21 +104,28 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = ColorScheme.fromSeed(
         seedColor: const Color(0xFF1463FF), brightness: Brightness.light);
-    return MultiBlocProvider(
-      providers: [
-        BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
-        BlocProvider(
-            create: (_) => ConnectionBloc(
-                _BridgeRepository(sppRepo, bleRepo), CommandRegistry())),
-      ],
-      child: MaterialApp(
-        title: 'Pruebas Flutter',
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: scheme,
-          textTheme: GoogleFonts.interTextTheme(),
+
+    // Crear instancia de FirebaseService
+    final firebaseService = FirebaseService();
+
+    return FirebaseProvider(
+      firebaseService: firebaseService,
+      child: MultiBlocProvider(
+        providers: [
+          BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
+          BlocProvider(
+              create: (_) => ConnectionBloc(
+                  _BridgeRepository(sppRepo, bleRepo), CommandRegistry())),
+        ],
+        child: MaterialApp(
+          title: 'Pruebas Flutter',
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: scheme,
+            textTheme: GoogleFonts.interTextTheme(),
+          ),
+          home: const HomePage(),
         ),
-        home: const HomePage(),
       ),
     );
   }
