@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "965164667454",
+    "project_id": "app-bascosta",
+    "storage_bucket": "app-bascosta.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:965164667454:android:08bda4ad9f70443ed7b76f",
+        "android_client_info": {
+          "package_name": "com.example.pruebas_flutter"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyADM7S2QSM3Mp-4ZneROcp2-asBrMYdn3Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

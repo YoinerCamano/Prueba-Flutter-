@@ -370,6 +370,62 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
                     const SizedBox(height: 16),
 
+                    // 🔌 Desconectar dispositivo
+                    Card(
+                      elevation: 0,
+                      color: Colors.red.shade50,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.link_off,
+                                    size: 24, color: Colors.red.shade700),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Desconectar Dispositivo',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleLarge
+                                      ?.copyWith(color: Colors.red.shade900),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton.icon(
+                              onPressed: () {
+                                context
+                                    .read<conn.ConnectionBloc>()
+                                    .add(conn.DisconnectRequested());
+                                Navigator.of(context).pop();
+                              },
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.red,
+                                foregroundColor: Colors.white,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              icon: const Icon(Icons.link_off),
+                              label: const Text(
+                                'Desconectar',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
                     // ℹ️ Información adicional
                     Card(
                       elevation: 0,

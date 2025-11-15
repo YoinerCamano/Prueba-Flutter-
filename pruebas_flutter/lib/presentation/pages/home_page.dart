@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../domain/entities.dart';
+import '../../core/firebase_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
+import '../widgets/firebase_widgets.dart';
 import 'device_info_page.dart';
 import 'configuration_page.dart';
+import 'weighing_history_page.dart';
 // import '../widgets/device_info_loader.dart'; // Reemplazado por DeviceInfoPage
 // import '../widgets/device_info_card.dart'; // Reemplazado por DeviceInfoLoader
 // import '../widgets/scale_status_icon.dart'; // DESACTIVADO
@@ -70,7 +73,18 @@ class _HomePageState extends State<HomePage> {
               );
             },
           ), */
-          // ❗ Icono de información del dispositivo
+          // Ícono de historial de pesajes
+          IconButton(
+            tooltip: 'Historial de Pesajes',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const WeighingHistoryPage(),
+                ),
+              );
+            },
+            icon: const Icon(Icons.history),
+          ),
           BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
             builder: (context, connectionState) {
               if (connectionState is conn.Connected) {
@@ -190,6 +204,119 @@ class _HomePageState extends State<HomePage> {
                           ],
                         ),
                       ),
+                    ),
+
+                  const SizedBox(height: 16),
+
+                  // === Lista de dispositivos vinculados/emparejados únicamente ===
+                  // === Botones de acción horizontal: ZERO y GUARDAR PESAJE ===
+                  if (connected)
+                    BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+                      builder: (context, connState) {
+                        final isStable = connState is conn.Connected &&
+                            connState.weight?.status == WeightStatus.stable;
+
+                        return Row(
+                          children: [
+                            // 0️⃣ Botón ZERO
+                            Expanded(
+                              child: FilledButton.tonalIcon(
+                                onPressed: () => _sendZeroCommand(context),
+                                icon: const Icon(Icons.exposure_zero, size: 18),
+                                label: const Text('ZERO'),
+                                style: FilledButton.styleFrom(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 16),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            // 💾 Botón GUARDAR PESAJE
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: isStable
+                                    ? () => _saveWeighing(context, connState)
+                                    : null,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor:
+                                      isStable ? Colors.blue : Colors.grey,
+                                  foregroundColor: Colors.white,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 16),
+                                ),
+                                icon: const Icon(Icons.save, size: 20),
+                                label: Text(
+                                  isStable ? 'GUARDAR' : 'Esperando...',
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+
+                  const SizedBox(height: 16),
+
+                  // === Últimos 5 pesajes ===
+                  if (connected)
+                    BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+                      buildWhen: (previous, current) {
+                        // Solo reconstruir cuando cambie el dispositivo conectado
+                        // No reconstruir en cada actualización de peso
+                        if (previous is conn.Connected &&
+                            current is conn.Connected) {
+                          return previous.device.id != current.device.id;
+                        }
+                        return previous.runtimeType != current.runtimeType;
+                      },
+                      builder: (context, connState) {
+                        if (connState is! conn.Connected) {
+                          return const SizedBox.shrink();
+                        }
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.history, size: 20),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Últimos pesajes',
+                                    style:
+                                        Theme.of(context).textTheme.titleMedium,
+                                  ),
+                                  const Spacer(),
+                                  TextButton(
+                                    onPressed: () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              const WeighingHistoryPage(),
+                                        ),
+                                      );
+                                    },
+                                    child: const Text('Ver todos'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              height: 280,
+                              child: MeasurementHistoryWidget(
+                                sessionId: null,
+                                deviceId: connState.device.id,
+                                limit: 5,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
 
                   const SizedBox(height: 16),
@@ -338,28 +465,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 12),
                   ],
-
-                  // === Botón de control ===
-                  FilledButton.tonalIcon(
-                    onPressed: (connected || connecting)
-                        ? () => context
-                            .read<conn.ConnectionBloc>()
-                            .add(conn.DisconnectRequested())
-                        : null,
-                    icon: const Icon(Icons.link_off, size: 18),
-                    label: Text(connecting ? 'Cancelar' : 'Desconectar'),
-                  ),
-
-                  // 0️⃣ Botón Zero - Dejar la báscula en cero
-                  if (connected)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: FilledButton.icon(
-                        onPressed: () => _sendZeroCommand(context),
-                        icon: const Icon(Icons.exposure_zero, size: 18),
-                        label: const Text('ZERO'),
-                      ),
-                    ),
                 ],
               ),
             );
@@ -556,6 +661,71 @@ class _HomePageState extends State<HomePage> {
         duration: Duration(seconds: 2),
       ),
     );
+  }
+
+  /// 💾 Guardar pesaje en Firebase
+  Future<void> _saveWeighing(BuildContext context, conn.Connected state) async {
+    final firebaseService = FirebaseProvider.of(context);
+    final weight = state.weight;
+
+    if (weight?.kg == null) return;
+
+    try {
+      await firebaseService.saveMeasurement(
+        deviceId: state.device.id,
+        weight: weight!.kg!,
+        unit: 'kg',
+        sessionId: null,
+        metadata: {},
+      );
+
+      // Obtener total de pesajes guardados
+      final total = await firebaseService.getTotalMeasurements(
+        deviceId: state.device.id,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '✅ Pesaje guardado - Total: $total registros',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(
+              label: 'Ver historial',
+              textColor: Colors.white,
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const WeighingHistoryPage(),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ Error guardando pesaje: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   /// 📋 Navegar a la página de información del dispositivo
