@@ -129,7 +129,8 @@ class FirebaseService {
     String? sessionId,
     bool preferCache = true,
   }) {
-    Query query = _firestore.collection(_measurementsCollection)
+    Query query = _firestore
+        .collection(_measurementsCollection)
         .where('deviceId', isEqualTo: deviceId);
 
     if (sessionId != null) {
@@ -141,7 +142,10 @@ class FirebaseService {
         .limit(1)
         .snapshots(includeMetadataChanges: preferCache)
         .map((snapshot) => snapshot.docs.isNotEmpty
-            ? {...snapshot.docs.first.data() as Map<String, dynamic>, 'id': snapshot.docs.first.id}
+            ? {
+                ...snapshot.docs.first.data() as Map<String, dynamic>,
+                'id': snapshot.docs.first.id
+              }
             : null);
   }
 

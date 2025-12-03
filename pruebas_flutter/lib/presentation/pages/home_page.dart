@@ -25,6 +25,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  // Controla si el diálogo de "Conectando" está abierto
+  bool _connectingDialogOpen = false;
   @override
   void initState() {
     super.initState();
@@ -47,15 +49,21 @@ class _HomePageState extends State<HomePage> {
       listener: (context, state) {
         // Mostrar dialog de conexión cuando está conectando
         if (state is conn.Connecting) {
+          // Evitar abrir múltiples veces
+          if (!_connectingDialogOpen) {
+            _connectingDialogOpen = true;
+          }
           showDialog(
             context: context,
             barrierDismissible: false,
             builder: (context) => _buildConnectingDialog(state),
           );
         } else {
-          // Cerrar el dialog si ya no está conectando
-          if (Navigator.canPop(context)) {
-            Navigator.pop(context);
+          // Cerrar el diálogo sólo si lo abrimos desde esta pantalla
+          if (_connectingDialogOpen) {
+            _connectingDialogOpen = false;
+            // Usar rootNavigator para asegurarnos de cerrar el diálogo modal
+            Navigator.of(context, rootNavigator: true).pop();
           }
         }
       },
