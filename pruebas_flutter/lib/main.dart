@@ -22,7 +22,7 @@ Future<void> _ensurePermissions() async {
 
   print('=== VERIFICANDO PERMISOS DE BLUETOOTH ===');
 
-  // Solicitar permisos en orden específico para Android 12+
+  // Solicitar permisos en orden específico para Android 12+ 
   final perms = <Permission>[
     Permission.bluetoothConnect,
     Permission.bluetoothScan,

@@ -110,9 +110,7 @@ class FirebaseService {
     }
 
     return query
-        // Orden primario por timestamp del servidor (cuando ya está disponible)
-        .orderBy('timestamp', descending: true)
-        // Orden secundario por createdAt del cliente para que aparezca inmediato
+        // Usar solo un orderBy para evitar necesidad de índices compuestos
         .orderBy('createdAt', descending: true)
         .limit(limit)
         .snapshots()

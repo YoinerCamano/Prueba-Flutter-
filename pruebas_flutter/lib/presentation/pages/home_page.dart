@@ -43,12 +43,28 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Básculas – Monitor'),
-        actions: [
-          // 🎯 Icono de estado de la báscula - DESACTIVADO
-          /* BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+    return BlocListener<conn.ConnectionBloc, conn.ConnectionState>(
+      listener: (context, state) {
+        // Mostrar dialog de conexión cuando está conectando
+        if (state is conn.Connecting) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => _buildConnectingDialog(state),
+          );
+        } else {
+          // Cerrar el dialog si ya no está conectando
+          if (Navigator.canPop(context)) {
+            Navigator.pop(context);
+          }
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Básculas – Monitor'),
+          actions: [
+            // 🎯 Icono de estado de la báscula - DESACTIVADO
+            /* BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
             builder: (context, connectionState) {
               return Padding(
                 padding: const EdgeInsets.only(right: 8.0),
@@ -73,402 +89,489 @@ class _HomePageState extends State<HomePage> {
               );
             },
           ), */
-          // Ícono de historial de pesajes
-          IconButton(
-            tooltip: 'Historial de Pesajes',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const WeighingHistoryPage(),
+            // Ícono de historial de pesajes
+            IconButton(
+              tooltip: 'Historial de Pesajes',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const WeighingHistoryPage(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.history),
+            ),
+            BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+              builder: (context, connectionState) {
+                if (connectionState is conn.Connected) {
+                  return IconButton(
+                    tooltip: 'Acerca del dispositivo',
+                    onPressed: () => _showDeviceInfo(context, connectionState),
+                    icon: const Icon(Icons.info_outline),
+                  );
+                }
+                return const SizedBox
+                    .shrink(); // No mostrar si no está conectado
+              },
+            ),
+            // ⚙️ Icono de configuración
+            BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+              builder: (context, connectionState) {
+                if (connectionState is conn.Connected) {
+                  return IconButton(
+                    tooltip: 'Configuración',
+                    onPressed: () =>
+                        _showConfiguration(context, connectionState),
+                    icon: const Icon(Icons.settings),
+                  );
+                }
+                return const SizedBox
+                    .shrink(); // No mostrar si no está conectado
+              },
+            ),
+            IconButton(
+              tooltip: 'Buscar dispositivos',
+              onPressed: () => _showScanDialog(),
+              icon: const Icon(Icons.search),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: BlocConsumer<conn.ConnectionBloc, conn.ConnectionState>(
+            listener: (context, state) {
+              if (state is conn.ConnectionError) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(state.message)));
+              }
+
+              // Detener escaneo cuando se conecta exitosamente
+              if (state is conn.Connected) {
+                context.read<ScanCubit>().stopScanning();
+                print('🛑 Escaneo detenido - dispositivo conectado');
+              }
+            },
+            builder: (context, connState) {
+              final connected = connState is conn.Connected;
+              final connecting = connState is conn.Connecting;
+
+              return Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    // === Tarjeta de lectura de peso o mensaje vacío ===
+                    // El estado "connecting" ahora se muestra como un Dialog modal centrado
+                    if (connected)
+                      WeightCard(
+                        weight: connState.weight,
+                        batteryVoltage: connState.batteryVoltage,
+                        batteryPercent: connState.batteryPercent,
+                      )
+                    else if (!connecting)
+                      Card(
+                        color: color.surfaceContainerHigh,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              Icon(Icons.info_outline),
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'No hay dispositivo conectado. Selecciona uno para iniciar.',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                    const SizedBox(height: 16),
+
+                    // === Lista de dispositivos vinculados/emparejados únicamente ===
+                    // === Botones de acción horizontal: ZERO y GUARDAR PESAJE ===
+                    if (connected)
+                      BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+                        builder: (context, connState) {
+                          final isStable = connState is conn.Connected &&
+                              connState.weight?.status == WeightStatus.stable;
+
+                          return Row(
+                            children: [
+                              // 0️⃣ Botón ZERO
+                              Expanded(
+                                child: FilledButton.tonalIcon(
+                                  onPressed: () => _sendZeroCommand(context),
+                                  icon:
+                                      const Icon(Icons.exposure_zero, size: 18),
+                                  label: const Text('ZERO'),
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 16),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              // 💾 Botón GUARDAR PESAJE
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: isStable
+                                      ? () => _saveWeighing(context, connState)
+                                      : null,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor:
+                                        isStable ? Colors.blue : Colors.grey,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 16),
+                                  ),
+                                  icon: const Icon(Icons.save, size: 20),
+                                  label: Text(
+                                    isStable ? 'GUARDAR' : 'Esperando...',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+
+                    const SizedBox(height: 16),
+
+                    // === Últimos 5 pesajes ===
+                    if (connected)
+                      BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+                        buildWhen: (previous, current) {
+                          // Solo reconstruir cuando cambie el dispositivo conectado
+                          // No reconstruir en cada actualización de peso
+                          if (previous is conn.Connected &&
+                              current is conn.Connected) {
+                            return previous.device.id != current.device.id;
+                          }
+                          return previous.runtimeType != current.runtimeType;
+                        },
+                        builder: (context, connState) {
+                          if (connState is! conn.Connected) {
+                            return const SizedBox.shrink();
+                          }
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 8),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.history, size: 20),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Últimos pesajes',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                    const Spacer(),
+                                    TextButton(
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const WeighingHistoryPage(),
+                                          ),
+                                        );
+                                      },
+                                      child: const Text('Ver todos'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                height: 280,
+                                child: MeasurementHistoryWidget(
+                                  sessionId: null,
+                                  deviceId: connState.device.id,
+                                  limit: 5,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+
+                    const SizedBox(height: 16),
+
+                    // === Lista de dispositivos vinculados/emparejados únicamente ===
+                    if (!connected && !connecting) ...[
+                      Row(
+                        children: [
+                          Text(
+                            'Dispositivos Emparejados',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const Spacer(),
+                          // Botón principal de actualizar
+                          TextButton.icon(
+                            onPressed: () =>
+                                context.read<ScanCubit>().loadBonded(),
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('Actualizar'),
+                          ),
+                          // Menú desplegable para acciones adicionales
+                          PopupMenuButton<String>(
+                            onSelected: (value) {
+                              switch (value) {
+                                case 'manual':
+                                  _checkManualConnection();
+                                  break;
+                                case 'diagnostic':
+                                  _runDiagnostic();
+                                  break;
+                              }
+                            },
+                            itemBuilder: (context) => [
+                              const PopupMenuItem(
+                                value: 'manual',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.bluetooth_connected, size: 16),
+                                    SizedBox(width: 8),
+                                    Text('Verificar Manual'),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'diagnostic',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.bug_report, size: 16),
+                                    SizedBox(width: 8),
+                                    Text('Diagnóstico'),
+                                  ],
+                                ),
+                              ),
+                            ],
+                            child: const Padding(
+                              padding: EdgeInsets.all(8.0),
+                              child: Icon(Icons.more_vert),
+                            ),
+                          ),
+                        ],
+                      ),
+                      Expanded(
+                        child: BlocBuilder<ScanCubit, ScanState>(
+                          builder: (context, scanState) {
+                            print(
+                                '🎨 === UI REBUILD DISPOSITIVOS EMPAREJADOS ===');
+                            print(
+                                '📊 Dispositivos vinculados: ${scanState.bonded.length}');
+
+                            final items = <Widget>[];
+
+                            // Mostrar SOLO dispositivos vinculados/emparejados
+                            for (final d in scanState.bonded) {
+                              print(
+                                  '🎨 Agregando emparejado: ${d.name} (${d.id})');
+                              items.add(
+                                DeviceTile(
+                                  device: d,
+                                  onTap: () => _connect(d),
+                                ),
+                              );
+                              items.add(const Divider(height: 1));
+                            }
+
+                            if (items.isEmpty) {
+                              print('⚠️ UI: Lista vacía, mostrando mensaje');
+                              items.add(
+                                Card(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      children: [
+                                        Icon(
+                                          Icons.bluetooth_disabled,
+                                          size: 48,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .outline,
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Text(
+                                          'No hay dispositivos emparejados',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .outline,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'Usa el botón de búsqueda para encontrar nuevos dispositivos',
+                                          textAlign: TextAlign.center,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .outline,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 16),
+                                        FilledButton.icon(
+                                          onPressed: () => _showScanDialog(),
+                                          icon: const Icon(Icons.search,
+                                              size: 18),
+                                          label:
+                                              const Text('Buscar Dispositivos'),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            } else {
+                              print(
+                                  '✅ UI: Mostrando ${items.length ~/ 2} dispositivos emparejados');
+                            }
+
+                            return ListView(children: items);
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                  ],
                 ),
               );
             },
-            icon: const Icon(Icons.history),
           ),
-          BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
-            builder: (context, connectionState) {
-              if (connectionState is conn.Connected) {
-                return IconButton(
-                  tooltip: 'Acerca del dispositivo',
-                  onPressed: () => _showDeviceInfo(context, connectionState),
-                  icon: const Icon(Icons.info_outline),
-                );
-              }
-              return const SizedBox.shrink(); // No mostrar si no está conectado
-            },
-          ),
-          // ⚙️ Icono de configuración
-          BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
-            builder: (context, connectionState) {
-              if (connectionState is conn.Connected) {
-                return IconButton(
-                  tooltip: 'Configuración',
-                  onPressed: () => _showConfiguration(context, connectionState),
-                  icon: const Icon(Icons.settings),
-                );
-              }
-              return const SizedBox.shrink(); // No mostrar si no está conectado
-            },
-          ),
-          IconButton(
-            tooltip: 'Buscar dispositivos',
-            onPressed: () => _showScanDialog(),
-            icon: const Icon(Icons.search),
-          ),
-        ],
+        ),
       ),
-      body: SafeArea(
-        child: BlocConsumer<conn.ConnectionBloc, conn.ConnectionState>(
-          listener: (context, state) {
-            if (state is conn.ConnectionError) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(state.message)));
-            }
+    );
+  }
 
-            // Detener escaneo cuando se conecta exitosamente
-            if (state is conn.Connected) {
-              context.read<ScanCubit>().stopScanning();
-              print('🛑 Escaneo detenido - dispositivo conectado');
-            }
-          },
-          builder: (context, connState) {
-            final connected = connState is conn.Connected;
-            final connecting = connState is conn.Connecting;
+  /// 🔄 Widget para mostrar el dialog de conexión centrado
+  Widget _buildConnectingDialog(conn.Connecting state) {
+    return Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+      ),
+      elevation: 8,
+      child: Container(
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Theme.of(context).colorScheme.primaryContainer,
+              Theme.of(context).colorScheme.secondaryContainer,
+            ],
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Icono animado de Bluetooth
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.bluetooth_searching,
+                size: 64,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 24),
 
-            return Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
+            // Indicador de progreso
+            SizedBox(
+              width: 48,
+              height: 48,
+              child: CircularProgressIndicator(
+                strokeWidth: 4,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Título
+            Text(
+              'Conectando',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+            ),
+            const SizedBox(height: 12),
+
+            // Nombre del dispositivo
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  // === Tarjeta de lectura de peso, estado de conexión o mensaje vacío ===
-                  if (connected)
-                    WeightCard(
-                      weight: connState.weight,
-                      batteryVoltage: connState.batteryVoltage,
-                      batteryPercent: connState.batteryPercent,
-                    )
-                  else if (connecting)
-                    Card(
-                      color: color.surfaceContainer,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          children: [
-                            const CircularProgressIndicator(),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Conectando...',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Estableciendo conexión con ${connState.device.name}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodyMedium
-                                  ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ),
-                      ),
-                    )
-                  else
-                    Card(
-                      color: color.surfaceContainerHigh,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info_outline),
-                            SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'No hay dispositivo conectado. Selecciona uno para iniciar.',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                  const SizedBox(height: 16),
-
-                  // === Lista de dispositivos vinculados/emparejados únicamente ===
-                  // === Botones de acción horizontal: ZERO y GUARDAR PESAJE ===
-                  if (connected)
-                    BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
-                      builder: (context, connState) {
-                        final isStable = connState is conn.Connected &&
-                            connState.weight?.status == WeightStatus.stable;
-
-                        return Row(
-                          children: [
-                            // 0️⃣ Botón ZERO
-                            Expanded(
-                              child: FilledButton.tonalIcon(
-                                onPressed: () => _sendZeroCommand(context),
-                                icon: const Icon(Icons.exposure_zero, size: 18),
-                                label: const Text('ZERO'),
-                                style: FilledButton.styleFrom(
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 16),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            // 💾 Botón GUARDAR PESAJE
-                            Expanded(
-                              child: FilledButton.icon(
-                                onPressed: isStable
-                                    ? () => _saveWeighing(context, connState)
-                                    : null,
-                                style: FilledButton.styleFrom(
-                                  backgroundColor:
-                                      isStable ? Colors.blue : Colors.grey,
-                                  foregroundColor: Colors.white,
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 16),
-                                ),
-                                icon: const Icon(Icons.save, size: 20),
-                                label: Text(
-                                  isStable ? 'GUARDAR' : 'Esperando...',
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-
-                  const SizedBox(height: 16),
-
-                  // === Últimos 5 pesajes ===
-                  if (connected)
-                    BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
-                      buildWhen: (previous, current) {
-                        // Solo reconstruir cuando cambie el dispositivo conectado
-                        // No reconstruir en cada actualización de peso
-                        if (previous is conn.Connected &&
-                            current is conn.Connected) {
-                          return previous.device.id != current.device.id;
-                        }
-                        return previous.runtimeType != current.runtimeType;
-                      },
-                      builder: (context, connState) {
-                        if (connState is! conn.Connected) {
-                          return const SizedBox.shrink();
-                        }
-
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 8),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.history, size: 20),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'Últimos pesajes',
-                                    style:
-                                        Theme.of(context).textTheme.titleMedium,
-                                  ),
-                                  const Spacer(),
-                                  TextButton(
-                                    onPressed: () {
-                                      Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder: (_) =>
-                                              const WeighingHistoryPage(),
-                                        ),
-                                      );
-                                    },
-                                    child: const Text('Ver todos'),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            SizedBox(
-                              height: 280,
-                              child: MeasurementHistoryWidget(
-                                sessionId: null,
-                                deviceId: connState.device.id,
-                                limit: 5,
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-
-                  const SizedBox(height: 16),
-
-                  // === Lista de dispositivos vinculados/emparejados únicamente ===
-                  if (!connected && !connecting) ...[
-                    Row(
-                      children: [
-                        Text(
-                          'Dispositivos Emparejados',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        // Botón principal de actualizar
-                        TextButton.icon(
-                          onPressed: () =>
-                              context.read<ScanCubit>().loadBonded(),
-                          icon: const Icon(Icons.refresh, size: 16),
-                          label: const Text('Actualizar'),
-                        ),
-                        // Menú desplegable para acciones adicionales
-                        PopupMenuButton<String>(
-                          onSelected: (value) {
-                            switch (value) {
-                              case 'manual':
-                                _checkManualConnection();
-                                break;
-                              case 'diagnostic':
-                                _runDiagnostic();
-                                break;
-                            }
-                          },
-                          itemBuilder: (context) => [
-                            const PopupMenuItem(
-                              value: 'manual',
-                              child: Row(
-                                children: [
-                                  Icon(Icons.bluetooth_connected, size: 16),
-                                  SizedBox(width: 8),
-                                  Text('Verificar Manual'),
-                                ],
-                              ),
-                            ),
-                            const PopupMenuItem(
-                              value: 'diagnostic',
-                              child: Row(
-                                children: [
-                                  Icon(Icons.bug_report, size: 16),
-                                  SizedBox(width: 8),
-                                  Text('Diagnóstico'),
-                                ],
-                              ),
-                            ),
-                          ],
-                          child: const Padding(
-                            padding: EdgeInsets.all(8.0),
-                            child: Icon(Icons.more_vert),
+                  Icon(
+                    Icons.scale,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      state.device.name,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
-                        ),
-                      ],
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    Expanded(
-                      child: BlocBuilder<ScanCubit, ScanState>(
-                        builder: (context, scanState) {
-                          print(
-                              '🎨 === UI REBUILD DISPOSITIVOS EMPAREJADOS ===');
-                          print(
-                              '📊 Dispositivos vinculados: ${scanState.bonded.length}');
-
-                          final items = <Widget>[];
-
-                          // Mostrar SOLO dispositivos vinculados/emparejados
-                          for (final d in scanState.bonded) {
-                            print(
-                                '🎨 Agregando emparejado: ${d.name} (${d.id})');
-                            items.add(
-                              DeviceTile(
-                                device: d,
-                                onTap: () => _connect(d),
-                              ),
-                            );
-                            items.add(const Divider(height: 1));
-                          }
-
-                          if (items.isEmpty) {
-                            print('⚠️ UI: Lista vacía, mostrando mensaje');
-                            items.add(
-                              Card(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Column(
-                                    children: [
-                                      Icon(
-                                        Icons.bluetooth_disabled,
-                                        size: 48,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .outline,
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Text(
-                                        'No hay dispositivos emparejados',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium
-                                            ?.copyWith(
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .outline,
-                                            ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'Usa el botón de búsqueda para encontrar nuevos dispositivos',
-                                        textAlign: TextAlign.center,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodyMedium
-                                            ?.copyWith(
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .outline,
-                                            ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      FilledButton.icon(
-                                        onPressed: () => _showScanDialog(),
-                                        icon:
-                                            const Icon(Icons.search, size: 18),
-                                        label:
-                                            const Text('Buscar Dispositivos'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          } else {
-                            print(
-                                '✅ UI: Mostrando ${items.length ~/ 2} dispositivos emparejados');
-                          }
-
-                          return ListView(children: items);
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
+                  ),
                 ],
               ),
-            );
-          },
+            ),
+            const SizedBox(height: 16),
+
+            // Mensaje descriptivo
+            Text(
+              'Estableciendo conexión Bluetooth...',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Por favor espera un momento',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant
+                        .withOpacity(0.7),
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
       ),
     );
@@ -670,11 +773,14 @@ class _HomePageState extends State<HomePage> {
 
     if (weight?.kg == null) return;
 
+    // Obtener la unidad actual de la báscula (por defecto 'kg')
+    final unit = state.weightUnit ?? 'kg';
+
     try {
       await firebaseService.saveMeasurement(
         deviceId: state.device.id,
         weight: weight!.kg!,
-        unit: 'kg',
+        unit: unit,
         sessionId: null,
         metadata: {},
       );

@@ -1,6 +1,6 @@
-# pruebas_flutter
+# Pruebas Flutter – Monitor de Básculas
 
-Aplicación Flutter para comunicación con básculas Bluetooth (SPP y BLE) con persistencia en Firebase.
+Aplicación Flutter para monitorear y registrar pesajes desde básculas vía Bluetooth (SPP/BLE) con almacenamiento en Firebase Firestore. Incluye historial, sesiones y utilidades de diagnóstico.
 
 ## 🎯 Características
 
@@ -45,6 +45,13 @@ flutter run
 - **[FIREBASE_SETUP.md](FIREBASE_SETUP.md)** - Guía completa de uso
 - **[FIREBASE_CONFIG.md](FIREBASE_CONFIG.md)** - Documentación técnica
 - **[FIREBASE_IMPLEMENTATION_SUMMARY.md](FIREBASE_IMPLEMENTATION_SUMMARY.md)** - Resumen de implementación
+
+Además, consulta la documentación ampliada en `docs/`:
+- `docs/ARCHITECTURE.md`: Arquitectura y flujo de datos
+- `docs/SETUP.md`: Guía de configuración del entorno
+- `docs/FIREBASE.md`: Modelo de datos, índices y reglas
+- `docs/BLUETOOTH.md`: Integración SPP/BLE y comandos
+- `docs/UI.md`: Páginas y widgets clave
 
 ## 🔥 Funcionalidades de Firebase
 
@@ -117,6 +124,12 @@ lib/
 - **devices** - Dispositivos Bluetooth
 - **measurements** - Mediciones de peso
 - **sessions** - Sesiones de pesaje
+
+## Troubleshooting
+
+- La app se cierra al abrir historial: asegúrate de usar `orderBy('createdAt')` o crear índices compuestos si aplicas múltiples `orderBy` y `where`.
+- Permisos Bluetooth en Android 12+: requeridos `bluetoothConnect`, `bluetoothScan`, `location`. Revisa `_ensurePermissions()` en `lib/main.dart`.
+- Tru-Test S3: usa BLE aunque tenga formato MAC; el puente `_BridgeRepository` decide el backend.
 
 ## Getting Started
 
