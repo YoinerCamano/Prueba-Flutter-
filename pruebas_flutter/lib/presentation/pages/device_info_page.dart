@@ -175,6 +175,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   /// 🔍 Procesar actualización del estado del BLoC
   void _processStateUpdate(conn.Connected state) {
     bool shouldMoveNext = false;
+    bool stateChanged = false;
 
     // Verificar qué dato llegó según el comando actual
     switch (_currentCommand) {
@@ -183,6 +184,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
           print('📋 Recibido: Número de Serie = ${state.serialNumber}');
           _serialNumber = state.serialNumber;
           shouldMoveNext = true;
+          stateChanged = true;
         }
         break;
 
@@ -192,6 +194,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
           print('🔧 Recibido: Firmware = ${state.firmwareVersion}');
           _firmwareVersion = state.firmwareVersion;
           shouldMoveNext = true;
+          stateChanged = true;
         }
         break;
 
@@ -200,6 +203,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
           print('🏷️ Recibido: Código de Celda = ${state.cellCode}');
           _cellCode = state.cellCode;
           shouldMoveNext = true;
+          stateChanged = true;
         }
         break;
 
@@ -210,6 +214,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
           _cellLoadmVV = state.cellLoadmVV;
           _microvoltsPerDivision = state.microvoltsPerDivision;
           shouldMoveNext = true;
+          stateChanged = true;
         }
         break;
 
@@ -218,12 +223,35 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
           print('📡 Recibido: Ruido CAD = ${state.adcNoise}');
           _adcNoise = state.adcNoise;
           shouldMoveNext = true;
+          stateChanged = true;
+        }
+        break;
+
+      default:
+        // Durante el refresco periódico (_currentCommand está vacío o es diferente)
+        // Actualizar siempre los valores técnicos si cambian
+        if (state.cellLoadmVV != null && state.cellLoadmVV != _cellLoadmVV) {
+          print(
+              '♻️ Actualizado: Celda = ${state.cellLoadmVV}, µV/div = ${state.microvoltsPerDivision}');
+          _cellLoadmVV = state.cellLoadmVV;
+          _microvoltsPerDivision = state.microvoltsPerDivision;
+          stateChanged = true;
+        }
+        if (state.adcNoise != null && state.adcNoise != _adcNoise) {
+          print('♻️ Actualizado: Ruido CAD = ${state.adcNoise}');
+          _adcNoise = state.adcNoise;
+          stateChanged = true;
         }
         break;
     }
 
     if (shouldMoveNext) {
       _moveToNextCommand();
+    }
+
+    // Actualizar UI si hubo cambios
+    if (stateChanged && mounted) {
+      setState(() {});
     }
   }
 
@@ -243,8 +271,8 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   /// ♻️ Refresco periódico mientras la página está abierta
   void _startPeriodicRefresh() {
     _refreshTimer?.cancel();
-    // Refrescar cada 2 segundos alternando SCLS y SCAV
-    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+    // Refrescar cada 500ms alternando SCLS y SCAV para máxima velocidad
+    _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
       if (!mounted || _isLoading || _refreshInFlight) return;
       _refreshInFlight = true;
 
@@ -256,7 +284,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
       _connectionBloc.add(conn.SendCommandRequested(cmd));
 
       // Liberar bandera después de un breve tiempo para permitir próximo ciclo
-      Future.delayed(const Duration(milliseconds: 400), () {
+      Future.delayed(const Duration(milliseconds: 200), () {
         _refreshInFlight = false;
       });
     });
@@ -341,7 +369,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
                     const SizedBox(height: 16),
 
                     // 🔧 Información técnica - Siempre mostrar
-                    _buildTechnicalInfoCard(),
+                    _buildTechnicalInfoCard(state),
                   ],
                 ),
               );
@@ -352,8 +380,8 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     );
   }
 
-  /// � Tarjeta de información técnica
-  Widget _buildTechnicalInfoCard() {
+  /// 🔧 Tarjeta de información técnica
+  Widget _buildTechnicalInfoCard(conn.Connected state) {
     return Card(
       elevation: 0,
       color: Theme.of(context).colorScheme.surfaceContainer,
@@ -385,43 +413,49 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
             _buildTechInfoRow(
               icon: Icons.confirmation_number,
               label: 'Número de Serie',
-              value: _serialNumber ??
+              value: state.serialNumber ??
+                  _serialNumber ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
               icon: Icons.memory,
               label: 'Firmware',
-              value: _firmwareVersion ??
+              value: state.firmwareVersion ??
+                  _firmwareVersion ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
               icon: Icons.qr_code,
               label: 'Código de Celda',
-              value:
-                  _cellCode ?? (_isLoading ? 'Cargando...' : 'No disponible'),
+              value: state.cellCode ??
+                  _cellCode ??
+                  (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
               icon: Icons.electrical_services,
               label: 'Celda de Carga (mV/V)',
-              value: _cellLoadmVV ??
+              value: state.cellLoadmVV ??
+                  _cellLoadmVV ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
               icon: Icons.tune,
               label: 'Microvoltios/División',
-              value: _microvoltsPerDivision ??
+              value: state.microvoltsPerDivision ??
+                  _microvoltsPerDivision ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
               icon: Icons.graphic_eq,
               label: 'Ruido CAD',
-              value:
-                  _adcNoise ?? (_isLoading ? 'Cargando...' : 'No disponible'),
+              value: state.adcNoise ??
+                  _adcNoise ??
+                  (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
           ],
         ),
