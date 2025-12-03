@@ -33,14 +33,16 @@ class FirebaseService {
     Map<String, dynamic>? metadata,
   }) async {
     try {
-      final now = DateTime.now().toUtc();
       final doc = await _firestore.collection(_measurementsCollection).add({
         'deviceId': deviceId,
         'weight': weight,
         'unit': unit,
         'sessionId': sessionId,
+        // Timestamps: usar serverTimestamp para orden consistente
         'timestamp': FieldValue.serverTimestamp(),
-        'createdAt': now,
+        'createdAt': FieldValue.serverTimestamp(),
+        // Timestamp del cliente sólo para debugging/telemetría
+        'clientCreatedAt': DateTime.now().toUtc(),
         'metadata': metadata ?? {},
       });
       return doc.id;
@@ -93,6 +95,7 @@ class FirebaseService {
     DateTime? startDate,
     DateTime? endDate,
     int limit = 100,
+    bool preferCache = true,
   }) {
     Query query = _firestore.collection(_measurementsCollection);
 
@@ -113,10 +116,33 @@ class FirebaseService {
         // Usar solo un orderBy para evitar necesidad de índices compuestos
         .orderBy('createdAt', descending: true)
         .limit(limit)
-        .snapshots()
+        .snapshots(includeMetadataChanges: preferCache)
         .map((snapshot) => snapshot.docs
             .map((doc) => {...doc.data() as Map<String, dynamic>, 'id': doc.id})
             .toList());
+  }
+
+  /// Obtiene la última medición de un dispositivo lo más rápido posible
+  /// Prioriza entregar datos desde caché y luego se actualiza con servidor.
+  Stream<Map<String, dynamic>?> getLatestMeasurement({
+    required String deviceId,
+    String? sessionId,
+    bool preferCache = true,
+  }) {
+    Query query = _firestore.collection(_measurementsCollection)
+        .where('deviceId', isEqualTo: deviceId);
+
+    if (sessionId != null) {
+      query = query.where('sessionId', isEqualTo: sessionId);
+    }
+
+    return query
+        .orderBy('createdAt', descending: true)
+        .limit(1)
+        .snapshots(includeMetadataChanges: preferCache)
+        .map((snapshot) => snapshot.docs.isNotEmpty
+            ? {...snapshot.docs.first.data() as Map<String, dynamic>, 'id': snapshot.docs.first.id}
+            : null);
   }
 
   /// Obtiene el total de mediciones guardadas
