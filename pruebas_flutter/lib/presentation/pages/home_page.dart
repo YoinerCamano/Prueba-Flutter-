@@ -199,7 +199,7 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 16),
 
                     // === Lista de dispositivos vinculados/emparejados únicamente ===
-                    // === Botones de acción horizontal: ZERO y GUARDAR PESAJE ===
+                    // === Botones de acción horizontal: GUARDAR PESAJE ===
                     if (connected)
                       BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
                         builder: (context, connState) {
@@ -208,20 +208,6 @@ class _HomePageState extends State<HomePage> {
 
                           return Row(
                             children: [
-                              // 0️⃣ Botón ZERO
-                              Expanded(
-                                child: FilledButton.tonalIcon(
-                                  onPressed: () => _sendZeroCommand(context),
-                                  icon:
-                                      const Icon(Icons.exposure_zero, size: 18),
-                                  label: const Text('ZERO'),
-                                  style: FilledButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                        vertical: 16),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
                               // 💾 Botón GUARDAR PESAJE
                               Expanded(
                                 child: FilledButton.icon(
@@ -747,32 +733,6 @@ class _HomePageState extends State<HomePage> {
       ],
     );
   } */
-
-  /// ❗ Mostrar información completa del dispositivo conectado
-  /// 0️⃣ Enviar comando Zero para poner la báscula en cero
-  void _sendZeroCommand(BuildContext context) {
-    print('0️⃣ Enviando comando SCZERO para poner báscula en cero');
-
-    // Enviar comando Zero al dispositivo
-    context.read<conn.ConnectionBloc>().add(
-          conn.SendCommandRequested('{SCZERO}'),
-        );
-
-    // Mostrar confirmación al usuario
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.exposure_zero, color: Colors.white),
-            SizedBox(width: 8),
-            Text('Comando Zero enviado - Báscula en cero'),
-          ],
-        ),
-        backgroundColor: Colors.blue,
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
 
   /// 💾 Guardar pesaje en Firebase
   Future<void> _saveWeighing(BuildContext context, conn.Connected state) async {

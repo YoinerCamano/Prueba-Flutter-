@@ -370,6 +370,59 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
                     const SizedBox(height: 16),
 
+                    // 0️⃣ Restablecer báscula a cero
+                    Card(
+                      elevation: 0,
+                      color: Theme.of(context).colorScheme.surfaceContainer,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.exposure_zero,
+                                    size: 24, color: Colors.blue),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Restablecer a Cero',
+                                  style: Theme.of(context).textTheme.titleLarge,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Pone la báscula en cero para comenzar nuevas mediciones',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    color: Colors.grey,
+                                  ),
+                            ),
+                            const SizedBox(height: 16),
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.tonalIcon(
+                                onPressed: () => _sendZeroCommand(),
+                                icon: const Icon(Icons.exposure_zero),
+                                label: const Text('ENVIAR COMANDO ZERO'),
+                                style: FilledButton.styleFrom(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 16),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
                     // 🔌 Desconectar dispositivo
                     Card(
                       elevation: 0,
@@ -455,6 +508,31 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
             },
           ),
         ),
+      ),
+    );
+  }
+
+  /// 0️⃣ Enviar comando Zero para poner la báscula en cero
+  void _sendZeroCommand() {
+    print('0️⃣ Enviando comando SCZERO para poner báscula en cero');
+
+    // Enviar comando Zero al dispositivo
+    _connectionBloc.add(
+      conn.SendCommandRequested('{SCZERO}'),
+    );
+
+    // Mostrar confirmación al usuario
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.exposure_zero, color: Colors.white),
+            SizedBox(width: 8),
+            Text('Comando Zero enviado - Báscula en cero'),
+          ],
+        ),
+        backgroundColor: Colors.blue,
+        duration: Duration(seconds: 2),
       ),
     );
   }

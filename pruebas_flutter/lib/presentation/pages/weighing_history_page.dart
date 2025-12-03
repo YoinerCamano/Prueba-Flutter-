@@ -24,6 +24,9 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
   final Set<String> _selectedIds = {};
   List<String> _allAvailableIds = [];
 
+  // 🎯 Referencia al BLoC para detener/reanudar polling
+  late final conn.ConnectionBloc _connectionBloc;
+
   DateTime? get _effectiveStartDate {
     switch (_dateFilter) {
       case DateFilter.today:
@@ -55,6 +58,27 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    print('📊 WeighingHistoryPage - Iniciando...');
+
+    // Guardar referencia al bloc
+    _connectionBloc = context.read<conn.ConnectionBloc>();
+
+    // 🛑 DETENER POLLING DE PESO
+    print('🛑 Deteniendo polling de peso...');
+    _connectionBloc.add(conn.StopPolling());
+  }
+
+  @override
+  void dispose() {
+    // 🔄 Reanudar polling al salir
+    print('🔄 WeighingHistoryPage dispose - Reanudando polling...');
+    _connectionBloc.add(conn.StartPolling());
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final connState = context.read<conn.ConnectionBloc>().state;
 
@@ -63,271 +87,281 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
       _selectedDeviceId = connState.device.id;
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_selectionMode
-            ? '${_selectedIds.length} seleccionados'
-            : 'Historial de Pesajes'),
-        leading: _selectionMode
-            ? IconButton(
-                icon: const Icon(Icons.close),
+    return PopScope(
+      onPopInvoked: (didPop) {
+        // 🔄 Al salir de la página, reanudar polling
+        if (didPop) {
+          print('🔄 PopScope - Reanudando polling...');
+          _connectionBloc.add(conn.StartPolling());
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(_selectionMode
+              ? '${_selectedIds.length} seleccionados'
+              : 'Historial de Pesajes'),
+          leading: _selectionMode
+              ? IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () {
+                    setState(() {
+                      _selectionMode = false;
+                      _selectedIds.clear();
+                    });
+                  },
+                )
+              : null,
+          actions: [
+            if (_selectionMode) ...[
+              IconButton(
+                icon: const Icon(Icons.select_all),
+                tooltip: 'Seleccionar todos',
+                onPressed: _allAvailableIds.isEmpty
+                    ? null
+                    : () {
+                        setState(() {
+                          _selectedIds.addAll(_allAvailableIds);
+                        });
+                      },
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete),
+                tooltip: 'Eliminar seleccionados',
+                onPressed: _selectedIds.isEmpty
+                    ? null
+                    : () => _deleteSelectedMeasurements(context),
+              ),
+            ] else ...[
+              IconButton(
+                icon: const Icon(Icons.checklist),
+                tooltip: 'Selección múltiple',
                 onPressed: () {
                   setState(() {
-                    _selectionMode = false;
-                    _selectedIds.clear();
+                    _selectionMode = true;
                   });
                 },
-              )
-            : null,
-        actions: [
-          if (_selectionMode) ...[
-            IconButton(
-              icon: const Icon(Icons.select_all),
-              tooltip: 'Seleccionar todos',
-              onPressed: _allAvailableIds.isEmpty
-                  ? null
-                  : () {
-                      setState(() {
-                        _selectedIds.addAll(_allAvailableIds);
-                      });
-                    },
-            ),
-            IconButton(
-              icon: const Icon(Icons.delete),
-              tooltip: 'Eliminar seleccionados',
-              onPressed: _selectedIds.isEmpty
-                  ? null
-                  : () => _deleteSelectedMeasurements(context),
-            ),
-          ] else ...[
-            IconButton(
-              icon: const Icon(Icons.checklist),
-              tooltip: 'Selección múltiple',
-              onPressed: () {
-                setState(() {
-                  _selectionMode = true;
-                });
-              },
-            ),
-            PopupMenuButton<int>(
-              tooltip: 'Cantidad a mostrar',
-              icon: const Icon(Icons.filter_list),
-              onSelected: (value) {
-                setState(() {
-                  _limit = value;
-                });
-              },
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: 20,
-                  child: Text(
-                    'Últimos 20',
-                    style: TextStyle(
-                      fontWeight: _limit == 20 ? FontWeight.bold : null,
-                    ),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 50,
-                  child: Text(
-                    'Últimos 50',
-                    style: TextStyle(
-                      fontWeight: _limit == 50 ? FontWeight.bold : null,
-                    ),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 100,
-                  child: Text(
-                    'Últimos 100',
-                    style: TextStyle(
-                      fontWeight: _limit == 100 ? FontWeight.bold : null,
-                    ),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 200,
-                  child: Text(
-                    'Últimos 200',
-                    style: TextStyle(
-                      fontWeight: _limit == 200 ? FontWeight.bold : null,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
-      ),
-      body: Column(
-        children: [
-          // Filtros
-          Card(
-            margin: const EdgeInsets.all(16),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Filtros',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Filtro por dispositivo
-                  Row(
-                    children: [
-                      const Icon(Icons.bluetooth, size: 16),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Dispositivo: ${_selectedDeviceId ?? "Todos"}',
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                      ),
-                      if (_selectedDeviceId != null)
-                        TextButton.icon(
-                          onPressed: () {
-                            setState(() {
-                              _selectedDeviceId = null;
-                            });
-                          },
-                          icon: const Icon(Icons.clear, size: 16),
-                          label: const Text('Limpiar'),
-                        ),
-                    ],
-                  ),
-                  const Divider(),
-
-                  // Filtro por fecha
-                  Row(
-                    children: [
-                      const Icon(Icons.calendar_today, size: 16),
-                      const SizedBox(width: 8),
-                      const Text('Fecha:', style: TextStyle(fontSize: 14)),
-                      const SizedBox(width: 12),
-                      ChoiceChip(
-                        label: const Text('Todas'),
-                        selected: _dateFilter == DateFilter.none,
-                        onSelected: (selected) {
-                          if (selected) {
-                            setState(() {
-                              _dateFilter = DateFilter.none;
-                            });
-                          }
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      ChoiceChip(
-                        label: const Text('Hoy'),
-                        selected: _dateFilter == DateFilter.today,
-                        onSelected: (selected) {
-                          if (selected) {
-                            setState(() {
-                              _dateFilter = DateFilter.today;
-                            });
-                          }
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      ChoiceChip(
-                        label: const Text('Este mes'),
-                        selected: _dateFilter == DateFilter.thisMonth,
-                        onSelected: (selected) {
-                          if (selected) {
-                            setState(() {
-                              _dateFilter = DateFilter.thisMonth;
-                            });
-                          }
-                        },
-                      ),
-                    ],
-                  ),
-
-                  // Botón de rango personalizado
-                  if (_dateFilter == DateFilter.none)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: TextButton.icon(
-                        onPressed: () => _selectCustomDateRange(context),
-                        icon: const Icon(Icons.date_range, size: 16),
-                        label: const Text('Rango personalizado'),
+              ),
+              PopupMenuButton<int>(
+                tooltip: 'Cantidad a mostrar',
+                icon: const Icon(Icons.filter_list),
+                onSelected: (value) {
+                  setState(() {
+                    _limit = value;
+                  });
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 20,
+                    child: Text(
+                      'Últimos 20',
+                      style: TextStyle(
+                        fontWeight: _limit == 20 ? FontWeight.bold : null,
                       ),
                     ),
-
-                  // Mostrar rango personalizado seleccionado
-                  if (_dateFilter == DateFilter.custom &&
-                      _customStartDate != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.info_outline, size: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Desde ${_formatDate(_customStartDate!)} hasta ${_customEndDate != null ? _formatDate(_customEndDate!) : "hoy"}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.clear, size: 16),
-                            onPressed: () {
-                              setState(() {
-                                _dateFilter = DateFilter.none;
-                                _customStartDate = null;
-                                _customEndDate = null;
-                              });
-                            },
-                          ),
-                        ],
+                  ),
+                  PopupMenuItem(
+                    value: 50,
+                    child: Text(
+                      'Últimos 50',
+                      style: TextStyle(
+                        fontWeight: _limit == 50 ? FontWeight.bold : null,
                       ),
                     ),
-
-                  const Divider(),
-                  Row(
-                    children: [
-                      const Icon(Icons.info_outline, size: 16),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Mostrando últimos $_limit registros',
-                        style: const TextStyle(fontSize: 12),
+                  ),
+                  PopupMenuItem(
+                    value: 100,
+                    child: Text(
+                      'Últimos 100',
+                      style: TextStyle(
+                        fontWeight: _limit == 100 ? FontWeight.bold : null,
                       ),
-                    ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 200,
+                    child: Text(
+                      'Últimos 200',
+                      style: TextStyle(
+                        fontWeight: _limit == 200 ? FontWeight.bold : null,
+                      ),
+                    ),
                   ),
                 ],
               ),
-            ),
-          ),
+            ],
+          ],
+        ),
+        body: Column(
+          children: [
+            // Filtros
+            Card(
+              margin: const EdgeInsets.all(16),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Filtros',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
 
-          // Lista de pesajes
-          Expanded(
-            child: MeasurementHistoryWidget(
-              sessionId: null,
-              deviceId: _selectedDeviceId,
-              startDate: _effectiveStartDate,
-              endDate: _effectiveEndDate,
-              limit: _limit,
-              selectionMode: _selectionMode,
-              selectedIds: _selectedIds,
-              onSelectionChanged: (id, selected) {
-                setState(() {
-                  if (selected) {
-                    _selectedIds.add(id);
-                  } else {
-                    _selectedIds.remove(id);
-                  }
-                });
-              },
-              onSelectAll: (allIds) {
-                setState(() {
-                  _allAvailableIds = allIds;
-                });
-              },
+                    // Filtro por dispositivo
+                    Row(
+                      children: [
+                        const Icon(Icons.bluetooth, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Dispositivo: ${_selectedDeviceId ?? "Todos"}',
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                        ),
+                        if (_selectedDeviceId != null)
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _selectedDeviceId = null;
+                              });
+                            },
+                            icon: const Icon(Icons.clear, size: 16),
+                            label: const Text('Limpiar'),
+                          ),
+                      ],
+                    ),
+                    const Divider(),
+
+                    // Filtro por fecha
+                    Row(
+                      children: [
+                        const Icon(Icons.calendar_today, size: 16),
+                        const SizedBox(width: 8),
+                        const Text('Fecha:', style: TextStyle(fontSize: 14)),
+                        const SizedBox(width: 12),
+                        ChoiceChip(
+                          label: const Text('Todas'),
+                          selected: _dateFilter == DateFilter.none,
+                          onSelected: (selected) {
+                            if (selected) {
+                              setState(() {
+                                _dateFilter = DateFilter.none;
+                              });
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('Hoy'),
+                          selected: _dateFilter == DateFilter.today,
+                          onSelected: (selected) {
+                            if (selected) {
+                              setState(() {
+                                _dateFilter = DateFilter.today;
+                              });
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('Este mes'),
+                          selected: _dateFilter == DateFilter.thisMonth,
+                          onSelected: (selected) {
+                            if (selected) {
+                              setState(() {
+                                _dateFilter = DateFilter.thisMonth;
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+
+                    // Botón de rango personalizado
+                    if (_dateFilter == DateFilter.none)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: TextButton.icon(
+                          onPressed: () => _selectCustomDateRange(context),
+                          icon: const Icon(Icons.date_range, size: 16),
+                          label: const Text('Rango personalizado'),
+                        ),
+                      ),
+
+                    // Mostrar rango personalizado seleccionado
+                    if (_dateFilter == DateFilter.custom &&
+                        _customStartDate != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Desde ${_formatDate(_customStartDate!)} hasta ${_customEndDate != null ? _formatDate(_customEndDate!) : "hoy"}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.clear, size: 16),
+                              onPressed: () {
+                                setState(() {
+                                  _dateFilter = DateFilter.none;
+                                  _customStartDate = null;
+                                  _customEndDate = null;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    const Divider(),
+                    Row(
+                      children: [
+                        const Icon(Icons.info_outline, size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Mostrando últimos $_limit registros',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-        ],
+
+            // Lista de pesajes
+            Expanded(
+              child: MeasurementHistoryWidget(
+                sessionId: null,
+                deviceId: _selectedDeviceId,
+                startDate: _effectiveStartDate,
+                endDate: _effectiveEndDate,
+                limit: _limit,
+                selectionMode: _selectionMode,
+                selectedIds: _selectedIds,
+                onSelectionChanged: (id, selected) {
+                  setState(() {
+                    if (selected) {
+                      _selectedIds.add(id);
+                    } else {
+                      _selectedIds.remove(id);
+                    }
+                  });
+                },
+                onSelectAll: (allIds) {
+                  setState(() {
+                    _allAvailableIds = allIds;
+                  });
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
