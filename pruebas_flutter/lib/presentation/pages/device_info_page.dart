@@ -29,6 +29,9 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   // 🔄 Suscripción al BLoC
   StreamSubscription? _blocSubscription;
   Timer? _timeoutTimer;
+  Timer? _refreshTimer; // Refresco periódico de datos técnicos
+  bool _refreshInFlight = false; // Evitar solapamiento de comandos
+  int _refreshStep = 0; // 0: SCLS (celda/microvoltios), 1: SCAV (ruido CAD)
 
   // 🎯 Referencia al BLoC para dispose
   late final conn.ConnectionBloc _connectionBloc;
@@ -54,6 +57,9 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     print('🛑 Deteniendo polling de peso...');
     _connectionBloc.add(conn.StopPolling());
 
+    // Iniciar refresco periódico de datos técnicos
+    _startPeriodicRefresh();
+
     // Iniciar carga después de un pequeño delay
     Future.delayed(const Duration(milliseconds: 50), () {
       if (mounted) {
@@ -66,6 +72,9 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   void dispose() {
     _blocSubscription?.cancel();
     _timeoutTimer?.cancel();
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+    _refreshInFlight = false;
     // 🔄 Reanudar polling al salir
     print('🔄 DeviceInfoPage dispose - Reanudando polling...');
     _connectionBloc.add(conn.StartPolling());
@@ -228,6 +237,28 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
       if (mounted) {
         _sendNextCommand();
       }
+    });
+  }
+
+  /// ♻️ Refresco periódico mientras la página está abierta
+  void _startPeriodicRefresh() {
+    _refreshTimer?.cancel();
+    // Refrescar cada 2 segundos alternando SCLS y SCAV
+    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (!mounted || _isLoading || _refreshInFlight) return;
+      _refreshInFlight = true;
+
+      // Alternar entre comandos para no saturar el dispositivo
+      final cmd = (_refreshStep % 2 == 0) ? '{SCLS}' : '{SCAV}';
+      _refreshStep++;
+
+      print('♻️ Refresco técnico: enviando $cmd');
+      _connectionBloc.add(conn.SendCommandRequested(cmd));
+
+      // Liberar bandera después de un breve tiempo para permitir próximo ciclo
+      Future.delayed(const Duration(milliseconds: 400), () {
+        _refreshInFlight = false;
+      });
     });
   }
 
