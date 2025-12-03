@@ -9,6 +9,9 @@ class FirebaseService {
   static const String _devicesCollection = 'devices';
   static const String _measurementsCollection = 'measurements';
   static const String _sessionsCollection = 'sessions';
+  // Tablas de racimos (diarias) y sus entradas
+  static const String _bunchTablesCollection = 'bunch_tables';
+  static const String _bunchEntriesCollection = 'bunch_entries';
 
   /// Guarda información de un dispositivo
   Future<void> saveDevice(BtDevice device) async {
@@ -22,6 +25,121 @@ class FirebaseService {
       print('Error guardando dispositivo: $e');
       rethrow;
     }
+  }
+
+  /// Crea una tabla diaria de racimos identificada por hora de inicio del primer racimo
+  Future<String> createBunchTable({
+    required String deviceId,
+    required DateTime startDateTime,
+    Map<String, dynamic>? metadata,
+  }) async {
+    try {
+      final doc = await _firestore.collection(_bunchTablesCollection).add({
+        'deviceId': deviceId,
+        'startDateTime': startDateTime.toUtc(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'metadata': metadata ?? {},
+      });
+      return doc.id;
+    } catch (e) {
+      print('Error creando tabla de racimos: $e');
+      rethrow;
+    }
+  }
+
+  /// Obtiene o crea la tabla de racimos del día actual (según device)
+  Future<String> getOrCreateTodayBunchTable({
+    required String deviceId,
+    DateTime? now,
+  }) async {
+    try {
+      final current = now ?? DateTime.now().toUtc();
+      final startOfDay = DateTime.utc(current.year, current.month, current.day);
+      final endOfDay = startOfDay.add(const Duration(days: 1));
+
+      final existing = await _firestore
+          .collection(_bunchTablesCollection)
+          .where('deviceId', isEqualTo: deviceId)
+          .where('startDateTime', isGreaterThanOrEqualTo: startOfDay)
+          .where('startDateTime', isLessThan: endOfDay)
+          .limit(1)
+          .get();
+
+      if (existing.docs.isNotEmpty) {
+        return existing.docs.first.id;
+      }
+      return await createBunchTable(deviceId: deviceId, startDateTime: current);
+    } catch (e) {
+      print('Error obteniendo/creando tabla diaria: $e');
+      rethrow;
+    }
+  }
+
+  /// Agrega una entrada de racimo a la tabla
+  Future<String> addBunchEntry({
+    required String tableId,
+    required int number,
+    required double weightKg,
+    required DateTime weighingTime,
+    String? cintaColor,
+    String? cuadrilla,
+    String? lote,
+    bool? recusado,
+  }) async {
+    try {
+      final doc = await _firestore.collection(_bunchEntriesCollection).add({
+        'tableId': tableId,
+        'number': number,
+        'weightKg': weightKg,
+        'weighingTime': weighingTime.toUtc(),
+        'cintaColor': cintaColor,
+        'cuadrilla': cuadrilla,
+        'lote': lote,
+        'recusado': recusado ?? false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return doc.id;
+    } catch (e) {
+      print('Error agregando entrada de racimo: $e');
+      rethrow;
+    }
+  }
+
+  /// Actualiza los campos editables de una entrada
+  Future<void> updateBunchEntryFields({
+    required String entryId,
+    String? cintaColor,
+    String? cuadrilla,
+    String? lote,
+    bool? recusado,
+  }) async {
+    try {
+      final updates = <String, dynamic>{};
+      if (cintaColor != null) updates['cintaColor'] = cintaColor;
+      if (cuadrilla != null) updates['cuadrilla'] = cuadrilla;
+      if (lote != null) updates['lote'] = lote;
+      if (recusado != null) updates['recusado'] = recusado;
+      if (updates.isEmpty) return;
+
+      await _firestore
+          .collection(_bunchEntriesCollection)
+          .doc(entryId)
+          .update(updates);
+    } catch (e) {
+      print('Error actualizando campos de entrada: $e');
+      rethrow;
+    }
+  }
+
+  /// Stream de entradas por tabla (ordenado por número)
+  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+      streamBunchEntriesByTable(String tableId) {
+    return _firestore
+        .collection(_bunchEntriesCollection)
+        .where('tableId', isEqualTo: tableId)
+        .orderBy('number')
+        .snapshots()
+        .map((snap) => snap.docs);
   }
 
   /// Guarda una medición de peso

@@ -12,6 +12,7 @@ import '../widgets/firebase_widgets.dart';
 import 'device_info_page.dart';
 import 'configuration_page.dart';
 import 'weighing_history_page.dart';
+import 'bunch_table_page.dart';
 // import '../widgets/device_info_loader.dart'; // Reemplazado por DeviceInfoPage
 // import '../widgets/device_info_card.dart'; // Reemplazado por DeviceInfoLoader
 // import '../widgets/scale_status_icon.dart'; // DESACTIVADO
@@ -108,6 +109,18 @@ class _HomePageState extends State<HomePage> {
                 );
               },
               icon: const Icon(Icons.history),
+            ),
+            // Tabla diaria de racimos
+            IconButton(
+              tooltip: 'Tabla de Racimos',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const BunchTablePage(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.table_chart),
             ),
             BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
               builder: (context, connectionState) {
