@@ -36,18 +36,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   int _initialSequenceStep = 0;
   bool _isInitialSequence = false;
 
-  // ⚡ OPTIMIZACIÓN: Control de frecuencia de batería
-  DateTime? _lastBatteryRequest;
-  static const Duration _batteryInterval = Duration(seconds: 10);
-
-  // 📊 ESTADÍSTICAS DE EFICIENCIA
+  // 📊 ESTADÍSTICAS
   int _weightRequestCount = 0;
-  int _batteryRequestCount = 0;
-
-  bool _shouldRequestBattery() {
-    if (_lastBatteryRequest == null) return true;
-    return DateTime.now().difference(_lastBatteryRequest!) >= _batteryInterval;
-  }
 
   ConnectionBloc(this.repo, this._commandRegistry)
       : super(const ConnectionState.disconnected()) {
@@ -96,9 +86,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         _waitingForResponse = false;
         _responseTimeoutTimer?.cancel();
         _responseTimeoutTimer = null;
-        _lastBatteryRequest = null;
+        //_lastBatteryRequest = null;
         _weightRequestCount = 0;
-        _batteryRequestCount = 0;
+        //_batteryRequestCount = 0;
 
         // 🔄 NO INICIAR POLLING AUTOMÁTICAMENTE
         // El polling se iniciará solo cuando se necesite (ej: ver WeightCard)
@@ -143,9 +133,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     // 4. Resetear estadísticas y variables de tracking
     _lastCommandSent = null;
     _lastCommandTime = null;
-    _lastBatteryRequest = null;
+    //_lastBatteryRequest = null;
     _weightRequestCount = 0;
-    _batteryRequestCount = 0;
+    // _batteryRequestCount = 0;
 
     // 🚀 Resetear secuencia inicial
     _isInitialSequence = false;
@@ -512,7 +502,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
       print('🔓 Respuesta recibida → Desbloqueando siguiente comando');
 
-      // Programar el siguiente comando con un delay mínimo
+      // Programar el siguiente comando - 50ms para ~20 lecturas/seg
       Future.delayed(const Duration(milliseconds: 50), () {
         _sendNextSequentialCommand();
       });
@@ -529,9 +519,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     String nextCommand;
 
-    // 🚀 SECUENCIA INICIAL: Comandos específicos al inicio
+    // 🚀 SECUENCIA INICIAL: Solo comandos de configuración y peso
     if (_isInitialSequence) {
-      final initialCommands = ['{ZA1}', '{MSWU}', '{RW}', '{BV}', '{BC}'];
+      final initialCommands = ['{ZA1}', '{MSWU}', '{RW}'];
 
       if (_initialSequenceStep < initialCommands.length) {
         nextCommand = initialCommands[_initialSequenceStep];
@@ -543,15 +533,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         // Si completamos la secuencia inicial, cambiar a modo normal
         if (_initialSequenceStep >= initialCommands.length) {
           _isInitialSequence = false;
-          print('✅ Secuencia inicial completada → Modo polling normal');
+          print('✅ Secuencia inicial completada → Modo polling solo peso');
         }
 
-        // Actualizar contadores
+        // Actualizar contador
         if (nextCommand == '{RW}') {
           _weightRequestCount++;
-        } else {
-          _batteryRequestCount++;
-          _lastBatteryRequest = DateTime.now();
         }
       } else {
         // Fallback a modo normal si algo falla
@@ -565,42 +552,24 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       nextCommand = forceCommand;
       print('🎯 Comando forzado: $nextCommand');
 
-      // Actualizar contadores según el tipo
+      // Actualizar contador
       if (nextCommand == '{RW}') {
         _weightRequestCount++;
-      } else if (nextCommand == '{BV}' || nextCommand == '{BC}') {
-        _batteryRequestCount++;
-        _lastBatteryRequest = DateTime.now();
       }
     }
-    // �🏆 PRIORIDAD AL PESO: Siempre enviar {RW} a menos que sea tiempo de batería
-    else if (_shouldRequestBattery()) {
-      // Es momento de pedir datos de batería (cada 10 segundos)
-      final batteryCommands = ['{BV}', '{BC}'];
-      final batteryIndex = DateTime.now().millisecondsSinceEpoch % 2;
-      nextCommand = batteryCommands[batteryIndex];
-      _lastBatteryRequest = DateTime.now();
-
-      print('🔋 Momento de batería (cada 10s): $nextCommand');
-      _batteryRequestCount++;
-    } else {
-      // Prioridad al peso para máxima frecuencia
+    // 🏆 SOLO PESO: En modo polling normal, únicamente enviar comandos de peso
+    else {
+      // Solo peso, sin batería
       nextCommand = '{RW}';
       _weightRequestCount++;
     }
 
-    // 📊 Mostrar estadísticas cada 20 comandos de peso
-    if (_weightRequestCount % 20 == 0 && _weightRequestCount > 0) {
-      final efficiency = (_weightRequestCount /
-              (_weightRequestCount + _batteryRequestCount) *
-              100)
-          .toStringAsFixed(1);
-      print(
-          '📊 EFICIENCIA: ${_weightRequestCount} peso vs ${_batteryRequestCount} batería → $efficiency% peso');
+    // 📊 Mostrar estadísticas cada 50 comandos de peso
+    if (_weightRequestCount % 50 == 0 && _weightRequestCount > 0) {
+      print('📊 ESTADÍSTICAS: ${_weightRequestCount} lecturas de peso');
     }
 
-    print(
-        '🔄 Comando optimizado: $nextCommand → Prioridad: ${nextCommand == '{RW}' ? 'PESO ⚖️' : 'BATERÍA 🔋'}');
+    print('🔄 Enviando comando: $nextCommand');
     add(SendCommandRequested(nextCommand));
   }
 
@@ -644,7 +613,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final timeoutDuration = isDeviceInfoCommand
           ? const Duration(
               milliseconds: 1500) // Optimizado para info del dispositivo
-          : const Duration(milliseconds: 400); // Rápido para peso/batería
+          : const Duration(milliseconds: 25); // Máxima velocidad ~20 lect/seg
 
       _responseTimeoutTimer?.cancel();
       _responseTimeoutTimer = Timer(timeoutDuration, () {
@@ -706,11 +675,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     }
     _pollingSuspended = false;
 
-    print('🎯 === INICIANDO POLLING OPTIMIZADO (PESO PRIORITARIO) ===');
+    print('🎯 === INICIANDO POLLING OPTIMIZADO (SOLO PESO) ===');
     print('📋 Sistema: Secuencial con tracking completo');
-    print('📋 Prioridad: {RW} (continuo) + {BV}/{BC} (cada 1 minuto)');
+    print('📋 Modo: Solo comandos de peso {RW}');
 
-    // 🔄 NUEVO SISTEMA: Polling optimizado con prioridad al peso
+    // 🔄 NUEVO SISTEMA: Polling optimizado solo con peso
     // Solo envía el primer comando, los siguientes se envían cuando llega respuesta
 
     // Reiniciar estado para polling limpio
@@ -718,16 +687,15 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _responseTimeoutTimer?.cancel();
     _responseTimeoutTimer = null;
 
-    // 🚀 ACTIVAR SECUENCIA INICIAL: Peso + Batería completa
+    // 🚀 ACTIVAR SECUENCIA INICIAL: Solo peso
     _isInitialSequence = true;
     _initialSequenceStep = 0;
     _weightRequestCount = 0;
-    _batteryRequestCount = 0;
 
-    print('� Activando secuencia inicial: {RW} → {BV} → {BC}');
+    print('🎯 Activando secuencia inicial: {ZA1} → {MSWU} → {RW}');
 
-    // 🚀 SECUENCIA INICIAL: Pedir datos completos al iniciar
-    print('📤 Iniciando secuencia inicial completa con tracking...');
+    // 🚀 SECUENCIA INICIAL: Configuración + peso
+    print('📤 Iniciando secuencia inicial con tracking...');
 
     // Iniciar con la secuencia de comandos iniciales
     _sendNextSequentialCommand(); // Los siguientes comandos se enviarán automáticamente por el sistema secuencial

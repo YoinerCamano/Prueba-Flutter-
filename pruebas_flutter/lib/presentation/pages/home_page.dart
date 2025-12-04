@@ -766,6 +766,22 @@ class _HomePageState extends State<HomePage> {
         metadata: {},
       );
 
+      // 🔄 Auto-guardar como entrada de racimo en la tabla diaria
+      try {
+        final tableId = await firebaseService.getOrCreateTodayBunchTable(
+          deviceId: state.device.id,
+        );
+        final nextNumber = await firebaseService.getNextBunchNumber(tableId);
+        await firebaseService.addBunchEntry(
+          tableId: tableId,
+          number: nextNumber,
+          weightKg: weight.kg!,
+          weighingTime: DateTime.now(),
+        );
+      } catch (e) {
+        print('⚠️ Error auto-guardando racimo: $e');
+      }
+
       // Obtener total de pesajes guardados
       final total = await firebaseService.getTotalMeasurements(
         deviceId: state.device.id,

@@ -131,6 +131,19 @@ class FirebaseService {
     }
   }
 
+  /// Eliminar una entrada de racimo
+  Future<void> deleteBunchEntry({required String entryId}) async {
+    try {
+      await _firestore
+          .collection(_bunchEntriesCollection)
+          .doc(entryId)
+          .delete();
+    } catch (e) {
+      print('Error eliminando entrada de racimo: $e');
+      rethrow;
+    }
+  }
+
   /// Stream de entradas por tabla (ordenado por número)
   Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
       streamBunchEntriesByTable(String tableId) {
@@ -375,6 +388,27 @@ class FirebaseService {
       print('Error eliminando sesión: $e');
       rethrow;
     }
+  }
+
+  /// Obtiene la cantidad de entradas de racimo para una tabla
+  Future<int> getBunchEntryCount(String tableId) async {
+    try {
+      final snapshot = await _firestore
+          .collection(_bunchEntriesCollection)
+          .where('tableId', isEqualTo: tableId)
+          .count()
+          .get();
+      return snapshot.count ?? 0;
+    } catch (e) {
+      print('Error contando entradas de racimo: $e');
+      return 0;
+    }
+  }
+
+  /// Obtiene el próximo número de racimo (count + 1)
+  Future<int> getNextBunchNumber(String tableId) async {
+    final count = await getBunchEntryCount(tableId);
+    return count + 1;
   }
 
   /// Actualiza el contador de mediciones de una sesión

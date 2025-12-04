@@ -26,10 +26,15 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   String? _microvoltsPerDivision;
   String? _adcNoise;
 
+  // 🔋 Datos de batería (actualizados cada 1 segundo)
+  double? _batteryVoltage;
+  double? _batteryPercent;
+
   // 🔄 Suscripción al BLoC
   StreamSubscription? _blocSubscription;
   Timer? _timeoutTimer;
   Timer? _refreshTimer; // Refresco periódico de datos técnicos
+  Timer? _batteryTimer; // Actualización de batería cada 1 segundo
   bool _refreshInFlight = false; // Evitar solapamiento de comandos
   int _refreshStep = 0; // 0: SCLS (celda/microvoltios), 1: SCAV (ruido CAD)
 
@@ -60,6 +65,9 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     // Iniciar refresco periódico de datos técnicos
     _startPeriodicRefresh();
 
+    // 🔋 Iniciar actualización de batería cada 1 segundo
+    _startBatteryRefresh();
+
     // Iniciar carga después de un pequeño delay
     Future.delayed(const Duration(milliseconds: 50), () {
       if (mounted) {
@@ -73,12 +81,56 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     _blocSubscription?.cancel();
     _timeoutTimer?.cancel();
     _refreshTimer?.cancel();
+    _batteryTimer?.cancel();
     _refreshTimer = null;
+    _batteryTimer = null;
     _refreshInFlight = false;
     // 🔄 Reanudar polling al salir
     print('🔄 DeviceInfoPage dispose - Reanudando polling...');
     _connectionBloc.add(conn.StartPolling());
     super.dispose();
+  }
+
+  /// 🔋 Iniciar actualización de batería cada 1 segundo
+  void _startBatteryRefresh() {
+    _batteryTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      // 🔒 Solo enviar si no hay otro refresh en progreso
+      if (_refreshInFlight) {
+        print('⏸️ Batería: esperando fin de refresco técnico...');
+        return;
+      }
+
+      _refreshInFlight = true;
+
+      // Enviar comandos de batería secuencialmente
+      _connectionBloc.add(conn.SendCommandRequested('{BV}'));
+
+      // Esperar respuesta antes de pedir porcentaje
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (mounted) {
+          _connectionBloc.add(conn.SendCommandRequested('{BC}'));
+        }
+      });
+
+      // Actualizar UI con datos actuales del estado y liberar bandera
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (!mounted) return;
+
+        final state = _connectionBloc.state;
+        if (state is conn.Connected) {
+          setState(() {
+            _batteryVoltage = state.batteryVoltage?.volts;
+            _batteryPercent = state.batteryPercent?.percent;
+          });
+        }
+        _refreshInFlight = false;
+      });
+    });
   }
 
   /// 🔄 Iniciar carga secuencial de datos
@@ -271,20 +323,22 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   /// ♻️ Refresco periódico mientras la página está abierta
   void _startPeriodicRefresh() {
     _refreshTimer?.cancel();
-    // Refrescar cada 500ms alternando SCLS y SCAV para máxima velocidad
-    _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    // Refrescar solo SCLS y SCAV (datos técnicos dinámicos) cada 2 segundos
+    // NO refrescar firmware, serial ni código de celda (datos estáticos)
+    // Intervalo mayor para evitar conflictos con batería (1 seg)
+    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
       if (!mounted || _isLoading || _refreshInFlight) return;
       _refreshInFlight = true;
 
-      // Alternar entre comandos para no saturar el dispositivo
+      // Alternar entre SCLS y SCAV (datos técnicos que pueden cambiar)
       final cmd = (_refreshStep % 2 == 0) ? '{SCLS}' : '{SCAV}';
       _refreshStep++;
 
-      print('♻️ Refresco técnico: enviando $cmd');
+      print('♻️ Refresco técnico dinámico: enviando $cmd');
       _connectionBloc.add(conn.SendCommandRequested(cmd));
 
-      // Liberar bandera después de un breve tiempo para permitir próximo ciclo
-      Future.delayed(const Duration(milliseconds: 200), () {
+      // Liberar bandera después de tiempo suficiente para respuesta
+      Future.delayed(const Duration(milliseconds: 400), () {
         _refreshInFlight = false;
       });
     });
@@ -456,6 +510,35 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
               value: state.adcNoise ??
                   _adcNoise ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
+            ),
+            const Divider(height: 32),
+            // 🔋 SECCIÓN DE BATERÍA (actualizada cada 1 segundo)
+            Row(
+              children: [
+                const Icon(Icons.battery_charging_full,
+                    size: 20, color: Colors.green),
+                const SizedBox(width: 8),
+                const Text(
+                  'Batería (actualización cada 1s):',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _buildTechInfoRow(
+              icon: Icons.flash_on,
+              label: 'Voltaje',
+              value: _batteryVoltage != null
+                  ? '${_batteryVoltage!.toStringAsFixed(2)} V'
+                  : 'Esperando...',
+            ),
+            const SizedBox(height: 12),
+            _buildTechInfoRow(
+              icon: Icons.battery_std,
+              label: 'Porcentaje',
+              value: _batteryPercent != null
+                  ? '${_batteryPercent!.toStringAsFixed(0)}%'
+                  : 'Esperando...',
             ),
           ],
         ),

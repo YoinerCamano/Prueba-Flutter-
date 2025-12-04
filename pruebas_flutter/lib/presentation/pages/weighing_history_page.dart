@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/firebase_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../widgets/firebase_widgets.dart';
+import 'bunch_table_page.dart';
 
 enum DateFilter { none, today, thisMonth, custom }
 
@@ -132,6 +133,17 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
                     : () => _deleteSelectedMeasurements(context),
               ),
             ] else ...[
+              IconButton(
+                icon: const Icon(Icons.table_chart),
+                tooltip: 'Tabla de Racimos',
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const BunchTablePage(),
+                    ),
+                  );
+                },
+              ),
               IconButton(
                 icon: const Icon(Icons.checklist),
                 tooltip: 'Selección múltiple',
