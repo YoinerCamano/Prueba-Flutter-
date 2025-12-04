@@ -9,8 +9,7 @@ class FirebaseService {
   static const String _devicesCollection = 'devices';
   static const String _measurementsCollection = 'measurements';
   static const String _sessionsCollection = 'sessions';
-  // Tablas de racimos (diarias) y sus entradas
-  static const String _bunchTablesCollection = 'bunch_tables';
+  // Racimos guardados directamente (sin tabla intermedia)
   static const String _bunchEntriesCollection = 'bunch_entries';
 
   /// Guarda información de un dispositivo
@@ -33,18 +32,8 @@ class FirebaseService {
     required DateTime startDateTime,
     Map<String, dynamic>? metadata,
   }) async {
-    try {
-      final doc = await _firestore.collection(_bunchTablesCollection).add({
-        'deviceId': deviceId,
-        'startDateTime': startDateTime.toUtc(),
-        'createdAt': FieldValue.serverTimestamp(),
-        'metadata': metadata ?? {},
-      });
-      return doc.id;
-    } catch (e) {
-      print('Error creando tabla de racimos: $e');
-      rethrow;
-    }
+    // 🚫 DEPRECATED: Ya no se usa. Los racimos se guardan directamente.
+    throw UnimplementedError('createBunchTable ya no se utiliza');
   }
 
   /// Obtiene o crea la tabla de racimos del día actual (según device)
@@ -52,32 +41,15 @@ class FirebaseService {
     required String deviceId,
     DateTime? now,
   }) async {
-    try {
-      final current = now ?? DateTime.now().toUtc();
-      final startOfDay = DateTime.utc(current.year, current.month, current.day);
-      final endOfDay = startOfDay.add(const Duration(days: 1));
-
-      final existing = await _firestore
-          .collection(_bunchTablesCollection)
-          .where('deviceId', isEqualTo: deviceId)
-          .where('startDateTime', isGreaterThanOrEqualTo: startOfDay)
-          .where('startDateTime', isLessThan: endOfDay)
-          .limit(1)
-          .get();
-
-      if (existing.docs.isNotEmpty) {
-        return existing.docs.first.id;
-      }
-      return await createBunchTable(deviceId: deviceId, startDateTime: current);
-    } catch (e) {
-      print('Error obteniendo/creando tabla diaria: $e');
-      rethrow;
-    }
+    // 🚫 DEPRECATED: Ya no se usa tabla intermedia.
+    // Retorna el deviceId como identificador único para este contexto
+    return deviceId;
   }
 
-  /// Agrega una entrada de racimo a la tabla
+  /// Agrega una entrada de racimo directamente (sin tabla intermedia)
   Future<String> addBunchEntry({
-    required String tableId,
+    required String
+        tableId, // Ahora es el deviceId (se ignora para compatibilidad)
     required int number,
     required double weightKg,
     required DateTime weighingTime,
@@ -87,25 +59,31 @@ class FirebaseService {
     bool? recusado,
   }) async {
     try {
-      final doc = await _firestore.collection(_bunchEntriesCollection).add({
-        'tableId': tableId,
+      // ⚡ Usar WriteBatch para mejor rendimiento
+      final batch = _firestore.batch();
+      final docRef = _firestore.collection(_bunchEntriesCollection).doc();
+
+      batch.set(docRef, {
         'number': number,
         'weightKg': weightKg,
         'weighingTime': weighingTime.toUtc(),
-        'cintaColor': cintaColor,
-        'cuadrilla': cuadrilla,
-        'lote': lote,
+        'cintaColor': cintaColor ?? '',
+        'cuadrilla': cuadrilla ?? '',
+        'lote': lote ?? '',
         'recusado': recusado ?? false,
         'createdAt': FieldValue.serverTimestamp(),
       });
-      return doc.id;
+
+      await batch.commit();
+      print('✅ Racimo #$number guardado: ${docRef.id}');
+      return docRef.id;
     } catch (e) {
-      print('Error agregando entrada de racimo: $e');
+      print('❌ Error guardando racimo: $e');
       rethrow;
     }
   }
 
-  /// Actualiza los campos editables de una entrada
+  /// Actualiza los campos editables de una entrada (optimizado)
   Future<void> updateBunchEntryFields({
     required String entryId,
     String? cintaColor,
@@ -121,10 +99,13 @@ class FirebaseService {
       if (recusado != null) updates['recusado'] = recusado;
       if (updates.isEmpty) return;
 
-      await _firestore
-          .collection(_bunchEntriesCollection)
-          .doc(entryId)
-          .update(updates);
+      // ⚡ Usar batch para actualización rápida
+      final batch = _firestore.batch();
+      batch.update(
+        _firestore.collection(_bunchEntriesCollection).doc(entryId),
+        updates,
+      );
+      await batch.commit();
     } catch (e) {
       print('Error actualizando campos de entrada: $e');
       rethrow;
@@ -144,15 +125,37 @@ class FirebaseService {
     }
   }
 
-  /// Stream de entradas por tabla (ordenado por número)
+  /// Stream de todos los racimos (ordenado por número)
   Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
       streamBunchEntriesByTable(String tableId) {
+    // tableId ya no se utiliza, devuelve todos los racimos ordenados
     return _firestore
         .collection(_bunchEntriesCollection)
-        .where('tableId', isEqualTo: tableId)
-        .orderBy('number')
+        .orderBy('number', descending: true)
         .snapshots()
         .map((snap) => snap.docs);
+  }
+
+  /// Obtiene los racimos guardados formateados como mediciones para el historial
+  Stream<List<Map<String, dynamic>>> getAllBunchEntries({
+    int limit = 100,
+  }) {
+    // ⚡ Usar caché agresivamente para mejor rendimiento
+    return _firestore
+        .collection(_bunchEntriesCollection)
+        .orderBy('number', descending: true)
+        .limit(limit)
+        .snapshots(includeMetadataChanges: true)
+        .map((snapshot) => snapshot.docs.map((doc) {
+              final data = doc.data();
+              return {
+                ...data,
+                'id': doc.id,
+                'weight': data['weightKg'] ?? 0.0,
+                'unit': 'kg',
+                'timestamp': data['weighingTime'] ?? data['createdAt'],
+              };
+            }).toList());
   }
 
   /// Guarda una medición de peso
@@ -407,8 +410,19 @@ class FirebaseService {
 
   /// Obtiene el próximo número de racimo (count + 1)
   Future<int> getNextBunchNumber(String tableId) async {
-    final count = await getBunchEntryCount(tableId);
-    return count + 1;
+    try {
+      final snap = await _firestore
+          .collection(_bunchEntriesCollection)
+          .orderBy('number', descending: true)
+          .limit(1)
+          .get();
+      if (snap.docs.isEmpty) return 1;
+      final lastNumber = snap.docs.first['number'] as int;
+      return lastNumber + 1;
+    } catch (e) {
+      print('⚠️ Error obteniendo próximo número: $e');
+      return 1;
+    }
   }
 
   /// Actualiza el contador de mediciones de una sesión

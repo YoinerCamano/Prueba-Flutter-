@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -747,88 +748,67 @@ class _HomePageState extends State<HomePage> {
     );
   } */
 
-  /// 💾 Guardar pesaje en Firebase
-  Future<void> _saveWeighing(BuildContext context, conn.Connected state) async {
+  /// 💾 Guardar pesaje en Firebase (optimizado - sin bloqueo)
+  void _saveWeighing(BuildContext context, conn.Connected state) {
     final firebaseService = FirebaseProvider.of(context);
     final weight = state.weight;
+    final weightKg = weight?.kg;
 
-    if (weight?.kg == null) return;
+    if (weightKg == null) return;
 
-    // Obtener la unidad actual de la báscula (por defecto 'kg')
-    final unit = state.weightUnit ?? 'kg';
-
-    try {
-      await firebaseService.saveMeasurement(
-        deviceId: state.device.id,
-        weight: weight!.kg!,
-        unit: unit,
-        sessionId: null,
-        metadata: {},
-      );
-
-      // 🔄 Auto-guardar como entrada de racimo en la tabla diaria
-      try {
-        final tableId = await firebaseService.getOrCreateTodayBunchTable(
-          deviceId: state.device.id,
-        );
-        final nextNumber = await firebaseService.getNextBunchNumber(tableId);
-        await firebaseService.addBunchEntry(
-          tableId: tableId,
-          number: nextNumber,
-          weightKg: weight.kg!,
-          weighingTime: DateTime.now(),
-        );
-      } catch (e) {
-        print('⚠️ Error auto-guardando racimo: $e');
-      }
-
-      // Obtener total de pesajes guardados
-      final total = await firebaseService.getTotalMeasurements(
-        deviceId: state.device.id,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '✅ Pesaje guardado - Total: $total registros',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
+    // ✅ Mostrar confirmación INMEDIATA
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '✅ Guardando: ${weightKg.toStringAsFixed(2)} kg',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(
-              label: 'Ver historial',
-              textColor: Colors.white,
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const WeighingHistoryPage(),
-                  ),
-                );
-              },
-            ),
+              ),
+            ],
           ),
-        );
-      }
-    } catch (e) {
-      print('❌ Error guardando pesaje: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Error: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 1),
+        ),
+      );
     }
+
+    // 🔄 Guardar en background sin bloquear la UI
+    unawaited(
+      Future.microtask(() async {
+        try {
+          final nextNumber =
+              await firebaseService.getNextBunchNumber(state.device.id);
+
+          await firebaseService.addBunchEntry(
+            tableId: state.device.id,
+            number: nextNumber,
+            weightKg: weightKg,
+            weighingTime: DateTime.now(),
+            cintaColor: '',
+            cuadrilla: '',
+            lote: '',
+            recusado: false,
+          );
+          print('✅ Racimo #$nextNumber guardado exitosamente');
+        } catch (e) {
+          print('❌ Error guardando pesaje: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('❌ Error al guardar: $e'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      }),
+    );
   }
 
   /// 📋 Navegar a la página de información del dispositivo

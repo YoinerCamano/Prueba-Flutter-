@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 import 'core/firebase_provider.dart';
 import 'data/bluetooth_repository_spp.dart';
@@ -22,7 +23,7 @@ Future<void> _ensurePermissions() async {
 
   print('=== VERIFICANDO PERMISOS DE BLUETOOTH ===');
 
-  // Solicitar permisos en orden específico para Android 12+ 
+  // Solicitar permisos en orden específico para Android 12+
   final perms = <Permission>[
     Permission.bluetoothConnect,
     Permission.bluetoothScan,
@@ -84,6 +85,17 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
   print('✅ Firebase inicializado correctamente');
+
+  // 🔴 Habilitar Firestore Offline Persistence (almacenamiento local)
+  try {
+    FirebaseFirestore.instance.settings = const Settings(
+      persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+    );
+    print('✅ Firestore Offline Persistence habilitado - Funciona sin conexión');
+  } catch (e) {
+    print('⚠️ Error habilitando persistencia offline: $e');
+  }
 
   await _ensurePermissions();
 

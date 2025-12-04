@@ -31,14 +31,9 @@ class MeasurementHistoryWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final firebaseService = FirebaseProvider.of(context);
 
+    // Usar getAllBunchEntries en lugar de getMeasurements
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: firebaseService.getMeasurements(
-        sessionId: sessionId,
-        deviceId: deviceId,
-        startDate: startDate,
-        endDate: endDate,
-        limit: limit,
-      ),
+      stream: firebaseService.getAllBunchEntries(limit: limit),
       builder: (context, snapshot) {
         // Mostrar loading solo si no hay datos previos
         if (snapshot.connectionState == ConnectionState.waiting &&
@@ -68,7 +63,7 @@ class MeasurementHistoryWidget extends StatelessWidget {
               children: [
                 Icon(Icons.inbox_outlined, size: 48, color: Colors.grey),
                 SizedBox(height: 16),
-                Text('No hay mediciones registradas'),
+                Text('No hay pesajes registrados'),
               ],
             ),
           );
@@ -87,11 +82,20 @@ class MeasurementHistoryWidget extends StatelessWidget {
           itemBuilder: (context, index) {
             final measurement = measurements[index];
             final measurementId = measurement['id'] as String;
-            final weight = measurement['weight'] ?? 0.0;
+            final weight =
+                measurement['weight'] ?? measurement['weightKg'] ?? 0.0;
             final unit = measurement['unit'] ?? 'kg';
-            final timestamp =
-                measurement['timestamp'] ?? measurement['createdAt'];
+            final timestamp = measurement['timestamp'] ??
+                measurement['weighingTime'] ??
+                measurement['createdAt'];
             final isSelected = selectedIds.contains(measurementId);
+
+            // Datos adicionales del racimo
+            final number = measurement['number'] ?? index + 1;
+            final cintaColor = measurement['cintaColor'] ?? '';
+            final cuadrilla = measurement['cuadrilla'] ?? '';
+            final lote = measurement['lote'] ?? '';
+            final recusado = measurement['recusado'] ?? false;
 
             return Card(
               margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -108,23 +112,63 @@ class MeasurementHistoryWidget extends StatelessWidget {
                     : CircleAvatar(
                         backgroundColor: Colors.blue,
                         child: Text(
-                          '${index + 1}',
+                          '#$number',
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.bold,
+                            fontSize: 12,
                           ),
                         ),
                       ),
-                title: Text(
-                  '$weight $unit',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
+                title: Row(
+                  children: [
+                    Text(
+                      '$weight $unit',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (recusado)
+                      Container(
+                        margin: const EdgeInsets.only(left: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade100,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'Recusado',
+                          style: TextStyle(fontSize: 10, color: Colors.red),
+                        ),
+                      ),
+                  ],
                 ),
-                subtitle: Text(
-                  _formatTimestamp(timestamp),
-                  style: const TextStyle(fontSize: 14),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 4),
+                    Text(
+                      _formatTimestamp(timestamp),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    if (cintaColor.isNotEmpty ||
+                        cuadrilla.isNotEmpty ||
+                        lote.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          [
+                            if (cintaColor.isNotEmpty) 'Cinta: $cintaColor',
+                            if (cuadrilla.isNotEmpty) 'Cuadrilla: $cuadrilla',
+                            if (lote.isNotEmpty) 'Lote: $lote',
+                          ].join(' | '),
+                          style:
+                              TextStyle(fontSize: 11, color: Colors.grey[600]),
+                        ),
+                      ),
+                  ],
                 ),
                 trailing: selectionMode
                     ? null

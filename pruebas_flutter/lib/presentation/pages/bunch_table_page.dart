@@ -1,8 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:intl/intl.dart';
 import '../../core/firebase_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../widgets/bunch_colors.dart';
+
+/// Formatea la fecha en formato: HH:MM DD/MM/AAAA
+String formatWeighingTime(dynamic weighingTime) {
+  if (weighingTime == null) return '';
+  try {
+    DateTime dateTime = weighingTime.toDate().toLocal();
+    return DateFormat('HH:mm dd/MM/yyyy').format(dateTime);
+  } catch (e) {
+    return '';
+  }
+}
 
 class BunchTablePage extends StatefulWidget {
   final String? deviceId;
@@ -120,11 +132,7 @@ class _BunchEntriesList extends StatelessWidget {
                         Text('Peso: ${weightKg.toStringAsFixed(2)} kg'),
                         const Spacer(),
                         Text(
-                          weighingTime != null
-                              ? DateTime.parse(weighingTime.toDate().toString())
-                                  .toLocal()
-                                  .toString()
-                              : '',
+                          formatWeighingTime(weighingTime),
                           style:
                               const TextStyle(fontSize: 12, color: Colors.grey),
                         ),
@@ -132,6 +140,7 @@ class _BunchEntriesList extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     _EditableFieldsRow(
+                      key: ValueKey(entryId), // ✅ Key para preservar estado
                       entryId: entryId,
                       cintaColor: cintaColor,
                       cuadrilla: cuadrilla,
@@ -157,6 +166,7 @@ class _EditableFieldsRow extends StatefulWidget {
   final bool recusado;
 
   const _EditableFieldsRow({
+    super.key,
     required this.entryId,
     this.cintaColor,
     this.cuadrilla,
@@ -192,7 +202,22 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
   }
 
   Future<void> _save() async {
+    print('🔍 DEBUG: _save() iniciado, _isEditing antes: $_isEditing');
     final firebaseService = FirebaseProvider.of(context);
+
+    // ✅ Cerrar edición INMEDIATAMENTE
+    if (mounted) {
+      print('🔍 DEBUG: Widget mounted, ejecutando setState');
+      setState(() {
+        print('🔍 DEBUG: Dentro de setState, cambiando _isEditing a false');
+        _isEditing = false;
+      });
+      print('🔍 DEBUG: setState ejecutado, _isEditing ahora: $_isEditing');
+    } else {
+      print('❌ DEBUG: Widget NO mounted!');
+    }
+
+    // 🔄 Guardar en background
     try {
       await firebaseService.updateBunchEntryFields(
         entryId: widget.entryId,
@@ -205,16 +230,39 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
         lote: _loteCtrl.text.trim().isEmpty ? null : _loteCtrl.text.trim(),
         recusado: _recusado,
       );
+
+      // ✅ Mostrar confirmación DESPUÉS de guardar exitosamente
       if (mounted) {
-        setState(() => _isEditing = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ Cambios guardados')),
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white, size: 20),
+                SizedBox(width: 8),
+                Text('✅ Cambios guardados correctamente'),
+              ],
+            ),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.green,
+          ),
         );
       }
+      print('✅ Racimo actualizado exitosamente');
     } catch (e) {
+      print('❌ Error guardando: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('❌ Error: $e')),
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text('❌ Error al guardar: $e')),
+              ],
+            ),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
         );
       }
     }
@@ -261,6 +309,7 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
 
   @override
   Widget build(BuildContext context) {
+    print('🔍 DEBUG: _EditableFieldsRow.build() - _isEditing: $_isEditing');
     final colorName = BunchColors.getColorName(_selectedColor);
 
     if (!_isEditing) {
