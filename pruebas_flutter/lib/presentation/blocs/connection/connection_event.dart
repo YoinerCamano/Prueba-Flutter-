@@ -62,3 +62,11 @@ class CheckManualConnectionRequested extends ConnectionEvent {
 
 /// Nuevo evento para detectar conexiones automáticas al iniciar
 class CheckAutoConnectionRequested extends ConnectionEvent {}
+
+/// Timeout de inicialización (ZA1 / MSWU)
+class InitTimeoutExpired extends ConnectionEvent {
+  final int step;
+  InitTimeoutExpired(this.step);
+  @override
+  List<Object?> get props => [step];
+}

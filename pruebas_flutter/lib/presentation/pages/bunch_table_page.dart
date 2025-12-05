@@ -57,7 +57,7 @@ class _BunchTablePageState extends State<BunchTablePage> {
       }
       if (deviceId == null) return;
       final id =
-          await firebaseService.getOrCreateTodayBunchTable(deviceId: deviceId);
+          await firebaseService?.getOrCreateTodayBunchTable(deviceId: deviceId);
       if (mounted) {
         setState(() => _tableId = id);
       }
@@ -92,7 +92,7 @@ class _BunchEntriesList extends StatelessWidget {
   Widget build(BuildContext context) {
     final firebaseService = FirebaseProvider.of(context);
     return StreamBuilder(
-      stream: firebaseService.streamBunchEntriesByTable(tableId),
+      stream: firebaseService?.streamBunchEntriesByTable(tableId),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
@@ -219,7 +219,7 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
 
     // 🔄 Guardar en background
     try {
-      await firebaseService.updateBunchEntryFields(
+      await firebaseService?.updateBunchEntryFields(
         entryId: widget.entryId,
         cintaColor: _selectedColor?.trim().isEmpty ?? true
             ? null
@@ -291,7 +291,7 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
 
     if (confirmed ?? false) {
       try {
-        await firebaseService.deleteBunchEntry(entryId: widget.entryId);
+        await firebaseService?.deleteBunchEntry(entryId: widget.entryId);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('✅ Racimo eliminado')),

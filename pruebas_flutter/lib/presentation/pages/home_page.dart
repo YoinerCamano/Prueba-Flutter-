@@ -783,11 +783,11 @@ class _HomePageState extends State<HomePage> {
       Future.microtask(() async {
         try {
           final nextNumber =
-              await firebaseService.getNextBunchNumber(state.device.id);
+              await firebaseService?.getNextBunchNumber(state.device.id);
 
-          await firebaseService.addBunchEntry(
+          await firebaseService?.addBunchEntry(
             tableId: state.device.id,
-            number: nextNumber,
+            number: nextNumber ?? 1,
             weightKg: weightKg,
             weighingTime: DateTime.now(),
             cintaColor: '',

@@ -401,7 +401,8 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
     if (confirm == true && mounted) {
       try {
         final firebaseService = FirebaseProvider.of(context);
-        await firebaseService.deleteMultipleMeasurements(_selectedIds.toList());
+        await firebaseService
+            ?.deleteMultipleMeasurements(_selectedIds.toList());
 
         setState(() {
           _selectedIds.clear();

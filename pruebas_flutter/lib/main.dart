@@ -15,6 +15,7 @@ import 'data/firebase/firebase_service.dart';
 import 'domain/bluetooth_repository.dart';
 import 'presentation/blocs/connection/connection_bloc.dart';
 import 'presentation/blocs/scan/scan_cubit.dart';
+import 'presentation/blocs/device_info/device_info_bloc.dart';
 import 'presentation/pages/home_page.dart';
 import 'domain/entities.dart';
 
@@ -120,14 +121,19 @@ class MyApp extends StatelessWidget {
     // Crear instancia de FirebaseService
     final firebaseService = FirebaseService();
 
+    // Crear CommandRegistry compartido
+    final commandRegistry = CommandRegistry();
+    final bridgeRepo = _BridgeRepository(sppRepo, bleRepo);
+
     return FirebaseProvider(
       firebaseService: firebaseService,
       child: MultiBlocProvider(
         providers: [
           BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
           BlocProvider(
-              create: (_) => ConnectionBloc(
-                  _BridgeRepository(sppRepo, bleRepo), CommandRegistry())),
+              create: (_) => ConnectionBloc(bridgeRepo, commandRegistry)),
+          BlocProvider(
+              create: (_) => DeviceInfoBloc(bridgeRepo, commandRegistry)),
         ],
         child: MaterialApp(
           title: 'Pruebas Flutter',

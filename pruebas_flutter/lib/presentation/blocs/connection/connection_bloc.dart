@@ -15,29 +15,27 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
 
-  // Variables para tracking (compatibilidad con código existente)
-  String? _lastCommandSent;
-  DateTime? _lastCommandTime;
-  final Map<String, String> _commandMapping = {
-    '{RW}': 'PESO',
-    '{BV}': 'VOLTAJE',
-    '{BC}': 'PORCENTAJE',
-  };
+  // Seguimiento de tracking de peso
+  bool _weightCommandInFlight = false;
+  Timer? _weightTimeoutTimer;
+  static const _weightTimeout = Duration(milliseconds: 120);
+  static const _trackingGap = Duration(milliseconds: 0);
 
-  // 🎯 NUEVAS VARIABLES PARA POLLING SECUENCIAL
-  bool _waitingForResponse = false;
-  Timer? _responseTimeoutTimer;
+  // Timeout de inicialización (ZA1 / MSWU)
+  Timer? _initTimeoutTimer;
+  static const _initTimeout = Duration(milliseconds: 2000);
+  String? _lastInitCommand;
 
-  // 🚦 FLAG DE SUSPENSIÓN TOTAL DE POLLING DE PESO/BATERÍA
-  // Cuando true: no se envían comandos automáticos {RW}/{BV}/{BC} ni se procesan lecturas de peso
+  // Seguimiento de inicialización (ZA1, MSWU, y cambios de unidad)
+  int _initializationStep = 0;
+  // 0: ninguno
+  // 1: esperando respuesta ZA1
+  // 2: esperando respuesta MSWU (consulta unidad inicial)
+  // 3: esperando confirmación de cambio de unidad (sin timeout)
+
+  // 🚦 FLAG DE SUSPENSIÓN DE POLLING DE PESO
+  // Cuando true: no se envían comandos de peso ni se procesan lecturas
   bool _pollingSuspended = false;
-
-  // 🚀 SECUENCIA INICIAL: Control de comandos de inicio
-  int _initialSequenceStep = 0;
-  bool _isInitialSequence = false;
-
-  // 📊 ESTADÍSTICAS
-  int _weightRequestCount = 0;
 
   ConnectionBloc(this.repo, this._commandRegistry)
       : super(const ConnectionState.disconnected()) {
@@ -49,6 +47,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     on<StopPolling>(_onStopPolling);
     on<CheckManualConnectionRequested>(_onCheckManualConnection);
     on<CheckAutoConnectionRequested>(_onCheckAutoConnection);
+    on<InitTimeoutExpired>(_onInitTimeoutExpired);
   }
 
   Future<void> _onConnect(
@@ -80,22 +79,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
         emit(ConnectionState.connected(device: e.device));
 
-        // 🎯 INICIALIZACIÓN: Reiniciar variables de tracking para nueva conexión
-        print(
-            '🚀 === INICIANDO SECUENCIA DE COMANDOS INICIALES CON TRACKING ===');
-        _waitingForResponse = false;
-        _responseTimeoutTimer?.cancel();
-        _responseTimeoutTimer = null;
-        //_lastBatteryRequest = null;
-        _weightRequestCount = 0;
-        //_batteryRequestCount = 0;
-
-        // 🔄 NO INICIAR POLLING AUTOMÁTICAMENTE
-        // El polling se iniciará solo cuando se necesite (ej: ver WeightCard)
-        await Future.delayed(const Duration(milliseconds: 100));
-
-        print(
-            '✅ Conexión estabilizada → Polling NO iniciado (se inicia bajo demanda)');
+        // 🎯 LIMPIO: Solo inicializar variables de peso
+        print('✅ Conexión establecida → Listo para polling de peso');
         // add(StartPolling()); // ❌ DESACTIVADO - Solo iniciar cuando se necesite
       } else {
         emit(ConnectionState.error(
@@ -115,9 +100,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     // 1. Detener polling y timers
     _pollTimer?.cancel();
     _pollTimer = null;
-    _responseTimeoutTimer?.cancel();
-    _responseTimeoutTimer = null;
-    _waitingForResponse = false;
+    _weightTimeoutTimer?.cancel();
+    _weightCommandInFlight = false;
 
     // 2. Cancelar suscripción al stream de datos
     if (_sub != null) {
@@ -131,15 +115,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _commandRegistry.purgeTimeouts();
 
     // 4. Resetear estadísticas y variables de tracking
-    _lastCommandSent = null;
-    _lastCommandTime = null;
-    //_lastBatteryRequest = null;
-    _weightRequestCount = 0;
-    // _batteryRequestCount = 0;
+    // (ninguna para este bloc - solo peso)
 
-    // 🚀 Resetear secuencia inicial
-    _isInitialSequence = false;
-    _initialSequenceStep = 0;
+    // 🚀 Resetear estado de polling
+    _pollingSuspended = false;
 
     // 5. Desconectar del repositorio (esto llamará al BLE adapter)
     print('🔌 Desconectando del dispositivo...');
@@ -160,417 +139,145 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (s is! Connected) return;
     final line = e.line.trim();
 
-    // 🔍 TRACKING OPTIMIZADO: Usar CommandRegistry primero
-    final timeStr = DateTime.now().toString().substring(11, 23);
-    print('📊 [$timeStr] RESPUESTA: "$line"');
-
-    // Intentar correlacionar con el registro de comandos
-    final resolved = _commandRegistry.resolveWithIncoming(line);
-    String correlationInfo = '';
-
-    if (resolved != null) {
-      final latency =
-          resolved.resolvedAt!.difference(resolved.createdAt).inMilliseconds;
-      final commandType = resolved.mappedCommand?.description ?? 'DESCONOCIDO';
-      correlationInfo =
-          'Comando ${resolved.rawCommand} ($commandType) → Latencia: ${latency}ms';
-      print('🔗 [$timeStr] CORRELACIÓN REGISTRY: $correlationInfo');
-    } else {
-      // Fallback al sistema legacy
-      final expectedType = _commandMapping[_lastCommandSent] ?? 'DESCONOCIDO';
-      final timeSinceCommand = _lastCommandTime != null
-          ? DateTime.now().difference(_lastCommandTime!).inMilliseconds
-          : 0;
-      correlationInfo =
-          'Comando $_lastCommandSent ($expectedType) → Latencia: ${timeSinceCommand}ms';
-      print('🔗 [$timeStr] CORRELACIÓN LEGACY: $correlationInfo');
-    }
-
     if (line == '__DISCONNECTED__') {
+      _weightTimeoutTimer?.cancel();
+      _weightCommandInFlight = false;
       emit(const ConnectionState.disconnected());
       return;
     }
 
-    // 🔧 PRIORIDAD 1: Procesar comandos de información del dispositivo
-    // Usar _lastCommandSent como fuente de verdad para evitar problemas con LIFO del registry
-    String? lastCommand = _lastCommandSent;
+    print('📥 Línea recibida: "$line" | InitStep: $_initializationStep');
 
-    // Si no hay comando en tracking local, usar el registry como fallback
-    if (lastCommand == null && resolved != null) {
-      lastCommand = resolved.rawCommand;
-    }
-
-    print(
-        '🔍 [$timeStr] lastCommand: "$lastCommand", line: "$line", contains[]: ${line.contains('[')}');
-
-    // Procesar respuestas de comandos de información del dispositivo
-    if (lastCommand != null && line.isNotEmpty) {
-      print('✅ [$timeStr] Procesando comando de info: $lastCommand');
-      // Nota: Algunas respuestas de info vienen entre corchetes ej. "[401474680066]".
-      // No filtrar por patrón de peso aquí; dejamos que cada caso procese su respuesta.
-      // Algunas básculas devuelven la respuesta entre corchetes, ej: "[401474680066]"
-      final cleaned = (line.startsWith('[') && line.endsWith(']'))
-          ? line.substring(1, line.length - 1).trim()
-          : line.trim();
-
-      // Comando {TTCSER} - Número de serie
-      if (lastCommand == '{TTCSER}') {
-        print('📋 [$timeStr] NÚMERO DE SERIE RECIBIDO: "$cleaned"');
-        emit(s.copyWith(serialNumber: cleaned));
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
+    // ═══════════════════════════════════════════════════════════
+    // MANEJO DE INICIALIZACIÓN {ZA1} → {MSWU}
+    // ═══════════════════════════════════════════════════════════
+    if (_initializationStep == 1) {
+      // Esperando respuesta de {ZA1}
+      // Respuesta típica: "^" (ACK) o similar
+      if (line == '^' || line.contains('ACK') || line.isNotEmpty) {
+        print('✅ INIT Paso 1: {ZA1} confirmado (ACK: $line)');
+        _initTimeoutTimer?.cancel();
+        _initializationStep = 2;
+        // Enviar siguiente comando: {MSWU} para consultar unidades
+        print('➡️ INIT Paso 2: Enviando {MSWU}...');
+        add(SendCommandRequested('{MSWU}'));
         return;
       }
-
-      // Comando {VA} - Versión de firmware
-      if (lastCommand == '{VA}') {
-        print('🔧 [$timeStr] VERSIÓN DE FIRMWARE RECIBIDA: "$cleaned"');
-        emit(s.copyWith(firmwareVersion: cleaned));
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
-        return;
-      }
-
-      // Comando {SACC} - Código de celda
-      if (lastCommand == '{SACC}') {
-        print('🏷️ [$timeStr] CÓDIGO DE CELDA RECIBIDO: "$cleaned"');
-        emit(s.copyWith(cellCode: cleaned));
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
-        return;
-      }
-
-      // Comando {SCLS} - Especificaciones de celda.
-      // Requisito actual: usar el MISMO valor numérico para ambos campos:
-      //  - `cellLoadmVV` con sufijo ' mV/V'
-      //  - `microvoltsPerDivision` sin unidad (solo número)
-      if (lastCommand == '{SCLS}') {
-        print('⚡ [$timeStr] ESPECIFICACIONES DE CELDA RECIBIDAS: "$cleaned"');
-        // Parseo: separar por espacio o coma y tomar el primer token numérico.
-        final parts = cleaned
-            .split(RegExp(r'[\s,]+'))
-            .where((p) => p.isNotEmpty)
-            .toList();
-        String? rawValue;
-        if (parts.isNotEmpty) {
-          // Aceptar primer elemento como valor base.
-          rawValue = parts[0];
-        }
-        if (rawValue != null) {
-          // Normalizar posible símbolo unitario incluido (ej: "2.0mV/V" o "2.0μV/div")
-          final normalized = rawValue
-              .replaceAll(
-                  RegExp(r'(mV\/V|μV\/div|uV\/div|mV|μV|uV)',
-                      caseSensitive: false),
-                  '')
-              .trim();
-          emit(s.copyWith(
-            cellLoadmVV: '$normalized mV/V',
-            microvoltsPerDivision: normalized, // sin unidad
-          ));
-        } else {
-          print(
-              '⚠️ [$timeStr] No se pudo extraer valor base de SCLS: "$cleaned"');
-        }
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
-        return;
-      }
-
-      // Comando {SCZERO} - Confirmación de reset
-      if (lastCommand == '{SCZERO}') {
-        print('0️⃣ [$timeStr] CONFIRMACIÓN ZERO RECIBIDA: "$cleaned"');
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
-        return;
-      }
-
-      // Comando {SCAV} - Ruido CAD (conversor analógico-digital)
-      if (lastCommand == '{SCAV}') {
-        print('📡 [$timeStr] RUIDO CAD RECIBIDO: "$cleaned"');
-        emit(s.copyWith(adcNoise: cleaned));
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
-        return;
-      }
-
-      // Comando {ZA1} - Habilitar confirmación de comandos
-      if (lastCommand == '{ZA1}') {
-        if (cleaned == '^') {
-          print(
-              '✅ [$timeStr] CONFIRMACIÓN {ZA1} RECIBIDA - Respuestas habilitadas');
-          _lastCommandSent = null;
-          _unlockNextCommand();
-          return;
-        }
-      }
-
-      // Comando {MSWU0} o {MSWU1} - Cambio de unidad (solo confirmación ^)
-      if (lastCommand == '{MSWU0}' || lastCommand == '{MSWU1}') {
-        if (cleaned == '^') {
-          final newUnit = lastCommand == '{MSWU0}' ? 'kg' : 'lb';
-          print('✅ [$timeStr] CONFIRMACIÓN CAMBIO UNIDAD → $newUnit');
-          final newState = s.copyWith(weightUnit: newUnit);
-          emit(newState);
-          _lastCommandSent = null;
-          _unlockNextCommand();
-          return;
-        } else {
-          print(
-              '⚠️ [$timeStr] Respuesta inesperada "$cleaned" para ${lastCommand} - Esperaba "^"');
-          return;
-        }
-      }
-
-      // Comando {MSWU} - Consulta de unidad de peso (responde 0=kg, 1=lb)
-      if (lastCommand == '{MSWU}') {
-        print('⚖️ [$timeStr] UNIDAD DE PESO RECIBIDA: "$cleaned"');
-        final String unit;
-        if (cleaned == '0') {
-          unit = 'kg';
-        } else if (cleaned == '1') {
+    } else if (_initializationStep == 2) {
+      // Esperando respuesta de {MSWU}
+      // Respuesta típica: "kg" o "lb" o "^" (ACK de cambio)
+      final lower = line.toLowerCase();
+      if (lower.contains('kg') || lower.contains('lb') || line == '^') {
+        print('✅ INIT Paso 2: {MSWU} recibido: $line');
+        _initTimeoutTimer?.cancel();
+        String? unit;
+        if (lower.contains('lb')) {
           unit = 'lb';
-        } else {
-          print(
-              '⚠️ [$timeStr] Valor inesperado "$cleaned" para consulta de unidad');
-          return;
+        } else if (lower.contains('kg')) {
+          unit = 'kg';
+        } else if (line == '^') {
+          if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
+            unit = 'lb';
+          } else if (_lastInitCommand == ScaleCommand.setUnitKg.code) {
+            unit = 'kg';
+          } else {
+            // ACK sin pista: si no sabemos, conservar previa
+            unit = s.weightUnit;
+          }
         }
-        print('⚖️ [$timeStr] Parseado como: $unit (actual: ${s.weightUnit})');
-        final newState = s.copyWith(weightUnit: unit);
-        print(
-            '⚖️ [$timeStr] Emitiendo nuevo estado con weightUnit: ${newState.weightUnit}');
-        emit(newState);
-        _lastCommandSent = null; // Limpiar tracking
-        _unlockNextCommand();
+        emit(s.copyWith(weightUnit: unit ?? s.weightUnit));
+        _initializationStep = 0; // INICIALIZACIÓN COMPLETADA
+        print('🎉 INIT: Secuencia completada. Iniciando polling de peso...');
+        // Reiniciar polling de peso
+        _sendNextWeightCommand();
+        return;
+      }
+    } else if (_initializationStep == 3) {
+      // Esperando confirmación ^ de cambio de unidad (SIN TIMEOUT)
+      if (line == '^') {
+        print('✅ Confirmación de cambio de unidad recibida');
+        _initTimeoutTimer?.cancel();
+        String? unit;
+        if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
+          unit = 'lb';
+        } else if (_lastInitCommand == ScaleCommand.setUnitKg.code) {
+          unit = 'kg';
+        }
+        if (unit != null) {
+          emit(s.copyWith(weightUnit: unit));
+        }
+        _initializationStep = 0;
+        print('🎉 Cambio de unidad completado. Reanudando polling de peso...');
+        _sendNextWeightCommand();
         return;
       }
     }
 
-    // OPTIMIZACIÓN: Procesar solo datos de peso para máxima velocidad
-    // Detectar formato [valor], [Uvalor], [-valor] o [---] - PESO PRIORITARIO
-    // ⚠️ SOLO procesar como peso si el último comando fue relacionado con peso
-
-    // Detectar sobrecarga [---]
-    if (line.trim() == '[---]' && !_pollingSuspended) {
-      if (lastCommand == '{RW}') {
-        print(
-            '⚠️ [$timeStr] SOBRECARGA DETECTADA: [---] - Báscula sobrepasó límite');
-        emit(s.copyWith(
-            weight: WeightReading(
-                kg: null, at: DateTime.now(), status: WeightStatus.overload)));
-        _lastCommandSent = null;
-      }
+    // ═══════════════════════════════════════════════════════════
+    // MODO NORMAL: PROCESAR PESO (solo si NO está en inicialización)
+    // ═══════════════════════════════════════════════════════════
+    if (_initializationStep != 0) {
+      // Aún en inicialización, ignorar línea
+      return;
     }
 
+    // Si el polling está suspendido, no procesar peso
+    if (_pollingSuspended) {
+      return;
+    }
+
+    print('📥 PESO: "$line"');
+
+    // 🚨 SOBRECARGA [---]
+    if (line.trim() == '[---]') {
+      print('⚠️ SOBRECARGA DETECTADA: [---]');
+      emit(s.copyWith(
+          weight: WeightReading(
+              kg: null, at: DateTime.now(), status: WeightStatus.overload)));
+      _completeWeightCommandCycle();
+      return;
+    }
+
+    // ⚖️ PESO: Detectar [valor], [Uvalor], [-valor]
     final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*\s*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
-    if (weightMatch != null && !_pollingSuspended) {
-      // ✅ Procesar valores numéricos si el comando fue {RW}, {BV}, {BC}
-      // Nota: ya NO procesamos cuando lastCommand is null para evitar ruido durante otras operaciones
-      final isDataCommand = [
-        ScaleCommand.readWeight.code,
-        ScaleCommand.batteryVoltage.code,
-        ScaleCommand.batteryCapacity.code,
-      ].contains(lastCommand);
-
-      if (!isDataCommand) {
-        print(
-            '⏭️ [$timeStr] Ignorando valor [$line] - comando actual: $lastCommand (no es comando de datos)');
-        // No desbloquear aquí: seguimos esperando la respuesta real del comando en curso
-        return;
-      }
-
-      final fullValueStr =
-          (weightMatch.group(1) ?? '').trim(); // Remover espacios
+    if (weightMatch != null) {
+      final fullValueStr = (weightMatch.group(1) ?? '').trim();
       double? value;
       WeightStatus status = WeightStatus.stable;
-
-      print(
-          '🔍 Valor extraído: "$fullValueStr" (original: "${weightMatch.group(1)}")');
 
       if (fullValueStr.startsWith('U')) {
         status = WeightStatus.unstable;
         value = double.tryParse(fullValueStr.substring(1).trim());
-        print('📊 Detectado PESO INESTABLE: $value kg');
+        print('📊 PESO INESTABLE: $value kg');
       } else if (fullValueStr.startsWith('-')) {
         status = WeightStatus.negative;
         value = double.tryParse(fullValueStr.trim());
-        print('📊 Detectado PESO NEGATIVO: $value kg');
+        print('📊 PESO NEGATIVO: $value kg');
       } else {
         status = WeightStatus.stable;
         value = double.tryParse(fullValueStr.trim());
-        print('📊 Detectado PESO ESTABLE: $value kg');
+        print('📊 PESO ESTABLE: $value kg');
       }
 
       if (value != null) {
-        // 🎯 CORRELACIÓN INTELIGENTE: Priorizar CommandRegistry
-        String? lastCommand = '';
-
-        if (resolved != null) {
-          // Usar información del CommandRegistry (más precisa)
-          lastCommand = resolved.rawCommand;
-        } else {
-          // Fallback al sistema legacy
-          lastCommand = _lastCommandSent;
-        }
-
-        final timeStr = DateTime.now().toString().substring(11, 23);
-
-        // Prioridad 1: Correlación basada en comando conocido
-        if (lastCommand == '{BV}' && value >= 1.0 && value <= 5) {
-          // Comando {BV} + rango de voltaje = VOLTAJE CONFIRMADO
-          print(
-              '✅ [$timeStr] VOLTAJE CONFIRMADO: $value V (comando: $lastCommand) ⚡');
-          emit(s.copyWith(
-              batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
-          _lastCommandSent = null; // Limpiar tracking legacy
-          return;
-        }
-
-        if (lastCommand == '{BC}' &&
-            value >= 0 &&
-            value <= 100 &&
-            value % 1 == 0) {
-          // Comando {BC} + rango de porcentaje = PORCENTAJE CONFIRMADO
-          print(
-              '✅ [$timeStr] PORCENTAJE CONFIRMADO: $value % (comando: $lastCommand) 🔋');
-          emit(s.copyWith(
-              batteryPercent:
-                  BatteryStatus(percent: value, at: DateTime.now())));
-          _lastCommandSent = null; // Limpiar tracking legacy
-          return;
-        }
-
-        if (lastCommand == '{RW}') {
-          // Comando {RW} = PESO CONFIRMADO
-          print(
-              '✅ [$timeStr] PESO CONFIRMADO: $value kg (status: $status, comando: $lastCommand) ⚖️');
-          emit(s.copyWith(
-              weight: WeightReading(
-                  kg: value, at: DateTime.now(), status: status)));
-          _lastCommandSent = null; // Limpiar tracking legacy
-          return;
-        }
-
-        // Prioridad 2: Si no hay comando claro, usar rangos como antes
-        if (value >= 3.0 && value <= 4.5 && value.toString().contains('.')) {
-          print('🔋 VOLTAJE (por rango): $value V');
-          emit(s.copyWith(
-              batteryVoltage: BatteryStatus(volts: value, at: DateTime.now())));
-        } else if (value >= 0 && value <= 100 && value % 1 == 0 && value < 10) {
-          print('🔋 PORCENTAJE (por rango): $value %');
-          emit(s.copyWith(
-              batteryPercent:
-                  BatteryStatus(percent: value, at: DateTime.now())));
-        } else {
-          print('⚖️ PESO (por defecto): $value kg (status: $status)');
-          emit(s.copyWith(
-              weight: WeightReading(
-                  kg: value, at: DateTime.now(), status: status)));
-        }
-        return;
-      }
-    }
-
-    // OPTIMIZACIÓN: Fallback rápido sin logs excesivos
-    // Evitar actualizar peso cuando el polling está suspendido (página de info)
-    if (!_pollingSuspended) {
-      final kg = extractFirstNumber(line);
-      if (kg != null) {
         emit(s.copyWith(
-            weight: WeightReading(
-                kg: kg, at: DateTime.now(), status: WeightStatus.stable)));
+            weight:
+                WeightReading(kg: value, at: DateTime.now(), status: status)));
       }
-    }
-
-    // Importante: No desbloquear aquí incondicionalmente.
-    // El desbloqueo solo debe ocurrir cuando procesamos una respuesta
-    // correspondiente al comando esperado o por timeout de seguridad.
-  }
-
-  /// 🔄 Desbloquea el envío del siguiente comando en la secuencia
-  void _unlockNextCommand() {
-    if (_pollingSuspended) {
-      // Si está suspendido, no programar siguiente comando
+      _completeWeightCommandCycle();
       return;
     }
-    if (_waitingForResponse) {
-      _waitingForResponse = false;
-      _responseTimeoutTimer?.cancel();
-      _responseTimeoutTimer = null;
 
-      print('🔓 Respuesta recibida → Desbloqueando siguiente comando');
-
-      // Programar el siguiente comando - 50ms para ~20 lecturas/seg
-      Future.delayed(const Duration(milliseconds: 50), () {
-        _sendNextSequentialCommand();
-      });
+    // Fallback: Intentar extraer número si no está entre corchetes
+    final kg = extractFirstNumber(line);
+    if (kg != null) {
+      emit(s.copyWith(
+          weight: WeightReading(
+              kg: kg, at: DateTime.now(), status: WeightStatus.stable)));
+      _completeWeightCommandCycle();
     }
-  }
-
-  /// 📤 Envía el siguiente comando con prioridad al peso
-  void _sendNextSequentialCommand({String? forceCommand}) {
-    if (_pollingSuspended) {
-      print('⏸️ Polling suspendido → no se envía comando automático');
-      return;
-    }
-    if (_waitingForResponse) return; // Ya hay un comando pendiente
-
-    String nextCommand;
-
-    // 🚀 SECUENCIA INICIAL: Solo comandos de configuración y peso
-    if (_isInitialSequence) {
-      final initialCommands = ['{ZA1}', '{MSWU}', '{RW}'];
-
-      if (_initialSequenceStep < initialCommands.length) {
-        nextCommand = initialCommands[_initialSequenceStep];
-        _initialSequenceStep++;
-
-        print(
-            '🚀 Secuencia inicial ($_initialSequenceStep/${initialCommands.length}): $nextCommand');
-
-        // Si completamos la secuencia inicial, cambiar a modo normal
-        if (_initialSequenceStep >= initialCommands.length) {
-          _isInitialSequence = false;
-          print('✅ Secuencia inicial completada → Modo polling solo peso');
-        }
-
-        // Actualizar contador
-        if (nextCommand == '{RW}') {
-          _weightRequestCount++;
-        }
-      } else {
-        // Fallback a modo normal si algo falla
-        _isInitialSequence = false;
-        nextCommand = '{RW}';
-        _weightRequestCount++;
-      }
-    }
-    // 🚀 COMANDO FORZADO: Para casos especiales
-    else if (forceCommand != null) {
-      nextCommand = forceCommand;
-      print('🎯 Comando forzado: $nextCommand');
-
-      // Actualizar contador
-      if (nextCommand == '{RW}') {
-        _weightRequestCount++;
-      }
-    }
-    // 🏆 SOLO PESO: En modo polling normal, únicamente enviar comandos de peso
-    else {
-      // Solo peso, sin batería
-      nextCommand = '{RW}';
-      _weightRequestCount++;
-    }
-
-    // 📊 Mostrar estadísticas cada 50 comandos de peso
-    if (_weightRequestCount % 50 == 0 && _weightRequestCount > 0) {
-      print('📊 ESTADÍSTICAS: ${_weightRequestCount} lecturas de peso');
-    }
-
-    print('🔄 Enviando comando: $nextCommand');
-    add(SendCommandRequested(nextCommand));
   }
 
   Future<void> _onSendCommand(
@@ -579,56 +286,52 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       if (!await repo.isConnected()) {
         _pollTimer?.cancel();
         _pollTimer = null;
+        _weightTimeoutTimer?.cancel();
+        _weightCommandInFlight = false;
         emit(const ConnectionState.disconnected());
         return;
       }
 
-      // 🎯 TRACKING DUAL: Sistema legacy + nuevo registry
-      _lastCommandSent = e.command;
-      _lastCommandTime = DateTime.now();
-      final expectedType = _commandMapping[e.command] ?? 'DESCONOCIDO';
-      final timeStr = _lastCommandTime!.toString().substring(11, 23);
+      final isInitializationCommand = e.command == '{ZA1}' ||
+          e.command == '{MSWU}' ||
+          e.command == ScaleCommand.setUnitKg.code ||
+          e.command == ScaleCommand.setUnitLb.code;
+      final isWeightCommand =
+          e.command == ScaleCommand.readWeight.code; // '{RW}'
 
-      // También registrar en el nuevo sistema
+      if (isInitializationCommand) {
+        print('📤 INIT: Enviando ${e.command}');
+        _lastInitCommand = e.command;
+        final isSetUnitCommand = e.command == ScaleCommand.setUnitKg.code ||
+            e.command == ScaleCommand.setUnitLb.code;
+
+        if (e.command == '{ZA1}') {
+          _initializationStep = 1; // Esperando respuesta ZA1
+          _startInitTimeout(1);
+        } else if (e.command == '{MSWU}') {
+          _initializationStep = 2; // Esperando respuesta MSWU
+          _startInitTimeout(2);
+        } else if (isSetUnitCommand) {
+          // 🟢 Cambio de unidad: esperar confirmación ^ (SIN TIMEOUT)
+          _initTimeoutTimer?.cancel();
+          _initializationStep = 3;
+          print(
+              '📤 Esperando confirmación de cambio de unidad (sin timeout)...');
+        }
+      } else if (isWeightCommand) {
+        print('📤 PESO: Enviando ${e.command}');
+        _weightCommandInFlight = true;
+        _startWeightTimeoutWatchdog();
+      } else {
+        print('📤 COMANDO: Enviando ${e.command}');
+      }
+
+      // Registrar en CommandRegistry
       _commandRegistry.registerOutgoing(e.command);
 
-      print('📤 [$timeStr] ENVIANDO: ${e.command} → Esperando: $expectedType');
-
-      // 🔒 BLOQUEO SECUENCIAL: Marcar como esperando respuesta
-      // Todos los comandos ahora esperan respuesta gracias a {ZA1}
-      _waitingForResponse = true;
-
-      // 🛡️ TIMEOUT DE SEGURIDAD: Variable según tipo de comando
-      // Comandos de información del dispositivo necesitan más tiempo
-      final isDeviceInfoCommand = e.command == '{TTCSER}' ||
-          e.command == '{VA}' ||
-          e.command == '{SACC}' ||
-          e.command == '{SCLS}' ||
-          e.command == '{SCAV}' ||
-          e.command == '{MSWU}' ||
-          e.command == '{ZA1}' ||
-          e.command == '{MSWU0}' ||
-          e.command == '{MSWU1}';
-
-      final timeoutDuration = isDeviceInfoCommand
-          ? const Duration(
-              milliseconds: 1500) // Optimizado para info del dispositivo
-          : const Duration(milliseconds: 25); // Máxima velocidad ~20 lect/seg
-
-      _responseTimeoutTimer?.cancel();
-      _responseTimeoutTimer = Timer(timeoutDuration, () {
-        if (_waitingForResponse) {
-          print(
-              '⏰ TIMEOUT: Comando ${e.command} sin respuesta → Desbloqueando');
-          _waitingForResponse = false;
-          _sendNextSequentialCommand();
-        }
-      });
-
-      // OPTIMIZACIÓN: Envío directo por BLE
+      // Enviar comando
       await repo.sendCommand(e.command);
-      print(
-          '✅ [$timeStr] COMANDO ENVIADO: ${e.command} → Aguardando respuesta...');
+      print('✅ PESO: Comando ${e.command} enviado');
     } catch (err) {
       final errorMsg = err.toString().toLowerCase();
 
@@ -639,6 +342,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           errorMsg.contains('broken pipe')) {
         _pollTimer?.cancel();
         _pollTimer = null;
+        _weightTimeoutTimer?.cancel();
+        _weightCommandInFlight = false;
         await _sub?.cancel();
         _sub = null;
         emit(const ConnectionState.disconnected());
@@ -654,11 +359,15 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           } else {
             _pollTimer?.cancel();
             _pollTimer = null;
+            _weightTimeoutTimer?.cancel();
+            _weightCommandInFlight = false;
             emit(const ConnectionState.disconnected());
           }
         } catch (checkError) {
           _pollTimer?.cancel();
           _pollTimer = null;
+          _weightTimeoutTimer?.cancel();
+          _weightCommandInFlight = false;
           emit(const ConnectionState.disconnected());
         }
       }
@@ -668,38 +377,45 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   Future<void> _onStartPolling(
       StartPolling e, Emitter<ConnectionState> emit) async {
     _pollTimer?.cancel();
-    _responseTimeoutTimer?.cancel();
+    _weightTimeoutTimer?.cancel();
+    _initTimeoutTimer?.cancel();
 
-    if (_pollingSuspended) {
-      print('▶️ Reanudando polling (estaba suspendido)');
-    }
     _pollingSuspended = false;
+    _weightCommandInFlight = false;
+    _initializationStep = 0;
 
-    print('🎯 === INICIANDO POLLING OPTIMIZADO (SOLO PESO) ===');
-    print('📋 Sistema: Secuencial con tracking completo');
-    print('📋 Modo: Solo comandos de peso {RW}');
+    print('🎯 === INICIANDO POLLING CON INICIALIZACIÓN ===');
 
-    // 🔄 NUEVO SISTEMA: Polling optimizado solo con peso
-    // Solo envía el primer comando, los siguientes se envían cuando llega respuesta
+    // Paso 1: Enviar {ZA1} para habilitar confirmación de comandos
+    print('📤 Paso 1: Enviando {ZA1} (confirmación de comandos)');
+    add(SendCommandRequested('{ZA1}'));
+  }
 
-    // Reiniciar estado para polling limpio
-    _waitingForResponse = false;
-    _responseTimeoutTimer?.cancel();
-    _responseTimeoutTimer = null;
+  void _onInitTimeoutExpired(
+      InitTimeoutExpired e, Emitter<ConnectionState> emit) {
+    // Solo actuar si seguimos en el mismo paso
+    if (_initializationStep != e.step) return;
 
-    // 🚀 ACTIVAR SECUENCIA INICIAL: Solo peso
-    _isInitialSequence = true;
-    _initialSequenceStep = 0;
-    _weightRequestCount = 0;
-
-    print('🎯 Activando secuencia inicial: {ZA1} → {MSWU} → {RW}');
-
-    // 🚀 SECUENCIA INICIAL: Configuración + peso
-    print('📤 Iniciando secuencia inicial con tracking...');
-
-    // Iniciar con la secuencia de comandos iniciales
-    _sendNextSequentialCommand(); // Los siguientes comandos se enviarán automáticamente por el sistema secuencial
-    // cuando lleguen las respuestas correspondientes
+    if (e.step == 1) {
+      print('⏰ INIT Timeout en ZA1, forzando avance a MSWU');
+      _initializationStep = 2;
+      add(SendCommandRequested('{MSWU}'));
+    } else if (e.step == 2) {
+      print('⏰ INIT Timeout en MSWU, infiriendo unidad del último comando');
+      if (state is Connected) {
+        String? unit;
+        if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
+          unit = 'lb';
+        } else if (_lastInitCommand == ScaleCommand.setUnitKg.code) {
+          unit = 'kg';
+        } else {
+          unit = (state as Connected).weightUnit; // fallback
+        }
+        emit((state as Connected).copyWith(weightUnit: unit));
+      }
+      _initializationStep = 0;
+      _sendNextWeightCommand();
+    }
   }
 
   Future<void> _onStopPolling(
@@ -708,13 +424,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     _pollTimer?.cancel();
     _pollTimer = null;
-    _responseTimeoutTimer?.cancel();
-    _responseTimeoutTimer = null;
-    _waitingForResponse = false;
+    _weightTimeoutTimer?.cancel();
+    _initTimeoutTimer?.cancel();
+    _weightCommandInFlight = false;
     _pollingSuspended = true;
 
-    print('🛑 Polling secuencial detenido - Timer cancelado');
-    print('🛑 No se enviarán más comandos automáticos de peso');
+    print('🛑 Polling de peso detenido');
   }
 
   /// Nuevo método para verificar conexiones manuales
@@ -791,28 +506,53 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   Future<void> close() async {
     print('🔒 === CERRANDO CONNECTION BLOC ===');
 
-    // 1. Cancelar todos los timers
+    // 1. Cancelar timers
     _pollTimer?.cancel();
-    _responseTimeoutTimer?.cancel();
+    _weightTimeoutTimer?.cancel();
 
-    // 2. Cancelar suscripción al stream
+    // 2. Cancelar suscripción
     await _sub?.cancel();
 
-    // 3. Desconectar dispositivo si está conectado
+    // 3. Desconectar si es necesario
     try {
       final isConnected = await repo.isConnected();
       if (isConnected) {
-        print('🔌 Desconectando dispositivo antes de cerrar bloc...');
+        print('🔌 Desconectando...');
         await repo.disconnect();
       }
     } catch (error) {
-      print('⚠️ Error al desconectar durante close: $error');
+      print('⚠️ Error durante close: $error');
     }
 
-    // 4. Limpiar CommandRegistry
-    _commandRegistry.purgeTimeouts();
-
-    print('✅ ConnectionBloc cerrado correctamente');
+    print('✅ ConnectionBloc cerrado');
     return super.close();
+  }
+
+  void _startWeightTimeoutWatchdog() {
+    _weightTimeoutTimer?.cancel();
+    _weightTimeoutTimer = Timer(_weightTimeout, () {
+      if (_pollingSuspended) return;
+      _weightCommandInFlight = false;
+      _sendNextWeightCommand();
+    });
+  }
+
+  void _completeWeightCommandCycle() {
+    _weightTimeoutTimer?.cancel();
+    _weightCommandInFlight = false;
+    if (_pollingSuspended) return;
+    Future.delayed(_trackingGap, _sendNextWeightCommand);
+  }
+
+  void _startInitTimeout(int step) {
+    _initTimeoutTimer?.cancel();
+    _initTimeoutTimer = Timer(_initTimeout, () {
+      add(InitTimeoutExpired(step));
+    });
+  }
+
+  void _sendNextWeightCommand() {
+    if (_pollingSuspended || _weightCommandInFlight) return;
+    add(SendCommandRequested(ScaleCommand.readWeight.code));
   }
 }

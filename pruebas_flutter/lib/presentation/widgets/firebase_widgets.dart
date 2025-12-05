@@ -33,7 +33,7 @@ class MeasurementHistoryWidget extends StatelessWidget {
 
     // Usar getAllBunchEntries en lugar de getMeasurements
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: firebaseService.getAllBunchEntries(limit: limit),
+      stream: firebaseService?.getAllBunchEntries(limit: limit),
       builder: (context, snapshot) {
         // Mostrar loading solo si no hay datos previos
         if (snapshot.connectionState == ConnectionState.waiting &&
@@ -198,7 +198,7 @@ class MeasurementHistoryWidget extends StatelessWidget {
                           if (confirm == true && context.mounted) {
                             try {
                               await firebaseService
-                                  .deleteMeasurement(measurementId);
+                                  ?.deleteMeasurement(measurementId);
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
@@ -264,7 +264,7 @@ class SessionsWidget extends StatelessWidget {
     final firebaseService = FirebaseProvider.of(context);
 
     return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: firebaseService.getSessions(deviceId: deviceId, limit: 20),
+      stream: firebaseService?.getSessions(deviceId: deviceId, limit: 20),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());

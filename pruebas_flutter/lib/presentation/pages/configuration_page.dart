@@ -67,6 +67,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
         _currentUnit = currentState.weightUnit;
         _isLoading = false;
       });
+      return; // ✅ Ya tenemos la unidad, no enviar {MSWU}
     }
 
     // Escuchar cambios en el estado del BLoC (SIEMPRE activo)
@@ -88,23 +89,12 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       }
     });
 
-    // Si no hay datos, enviar comando para consultar unidad
-    if (currentState is! conn.Connected || currentState.weightUnit == null) {
-      print('📤 Enviando {MSWU} para consultar unidad...');
-      _connectionBloc.add(conn.SendCommandRequested('{MSWU}'));
-
-      // Configurar timeout (2 segundos)
-      _timeoutTimer?.cancel();
-      _timeoutTimer = Timer(const Duration(seconds: 2), () {
-        if (mounted && _isLoading) {
-          print('⏰ TIMEOUT esperando respuesta de {MSWU}');
-          setState(() {
-            _isLoading = false;
-            _currentUnit = 'desconocida';
-          });
-        }
-      });
-    }
+    // Si no hay datos, simplemente esperar (la inicialización lo manejará)
+    print('📊 Esperando unidad del estado inicial...');
+    setState(() {
+      _isLoading = false;
+      _currentUnit = 'kg'; // Valor por defecto mientras se carga
+    });
   }
 
   /// 🔄 Cambiar unidad de peso
@@ -115,43 +105,27 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       _isChangingUnit = true;
     });
 
-    // PASO 1: Consultar unidad actual
-    print('📤 Paso 1: Consultando unidad actual con {MSWU}...');
-    _connectionBloc.add(conn.SendCommandRequested('{MSWU}'));
+    // Enviar comando de cambio directamente
+    final changeCommand = targetUnit == 'kg' ? '{MSWU0}' : '{MSWU1}';
+    print('📤 Enviando comando de cambio $changeCommand...');
+    _connectionBloc.add(conn.SendCommandRequested(changeCommand));
 
-    // Esperar respuesta y luego enviar comando de cambio
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (!mounted) return;
-
-      // PASO 2: Enviar comando de cambio (NO espera respuesta)
-      final changeCommand = targetUnit == 'kg' ? '{MSWU0}' : '{MSWU1}';
-      print('📤 Paso 2: Enviando comando de cambio $changeCommand...');
-      _connectionBloc.add(conn.SendCommandRequested(changeCommand));
-
-      // PASO 3: Esperar y volver a consultar para confirmar
-      Future.delayed(const Duration(milliseconds: 200), () {
-        if (!mounted) return;
-
-        print('📤 Paso 3: Confirmando cambio con {MSWU}...');
-        _connectionBloc.add(conn.SendCommandRequested('{MSWU}'));
-
-        // Timeout para todo el proceso
-        _timeoutTimer?.cancel();
-        _timeoutTimer = Timer(const Duration(seconds: 3), () {
-          if (mounted && _isChangingUnit) {
-            print('⏰ TIMEOUT al cambiar unidad');
-            setState(() {
-              _isChangingUnit = false;
-            });
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Error al cambiar unidad - timeout'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
+    // El bloc manejará la confirmación ^ y actualizará weightUnit
+    // Timeout solo por seguridad
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted && _isChangingUnit) {
+        print('⏰ TIMEOUT al cambiar unidad');
+        setState(() {
+          _isChangingUnit = false;
         });
-      });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error al cambiar unidad - timeout'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     });
   }
 

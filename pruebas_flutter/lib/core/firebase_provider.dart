@@ -11,11 +11,12 @@ class FirebaseProvider extends InheritedWidget {
     required super.child,
   });
 
-  static FirebaseService of(BuildContext context) {
+  static FirebaseService? of(BuildContext context) {
     final provider =
         context.dependOnInheritedWidgetOfExactType<FirebaseProvider>();
     if (provider == null) {
-      throw Exception('FirebaseProvider not found in context');
+      // ❌ Firebase deshabilitado - retornar null en lugar de exception
+      return null;
     }
     return provider.firebaseService;
   }

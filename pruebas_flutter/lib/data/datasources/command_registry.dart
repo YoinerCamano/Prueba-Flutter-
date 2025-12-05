@@ -39,6 +39,11 @@ class CommandRegistry {
       key: 'especificaciones_celda',
       description: 'Especificaciones de celda',
     ),
+    '{SCMV}': const DeviceCommand(
+      code: '{SCMV}',
+      key: 'microvoltios_division',
+      description: 'Microvoltios/División',
+    ),
     '{SCZERO}': const DeviceCommand(
       code: '{SCZERO}',
       key: 'reset_zero',

@@ -20,6 +20,14 @@ class _WeighingWithFirebasePageState extends State<WeighingWithFirebasePage> {
   Widget build(BuildContext context) {
     // Proveer el cubit localmente usando los servicios del contexto
     final firebaseService = FirebaseProvider.of(context);
+    if (firebaseService == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Registro de Pesaje')),
+        body: const Center(
+          child: Text('Firebase deshabilitado'),
+        ),
+      );
+    }
     final connectionBloc = context.read<conn.ConnectionBloc>();
 
     return BlocProvider<MeasurementPersistenceCubit>(
