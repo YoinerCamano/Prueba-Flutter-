@@ -3,15 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'firebase_options.dart';
-import 'core/firebase_provider.dart';
+import 'core/database_provider.dart';
 import 'data/bluetooth_repository_spp.dart';
 import 'data/ble/ble_adapter.dart';
 import 'data/ble/bluetooth_repository_ble.dart';
 import 'data/datasources/command_registry.dart';
-import 'data/firebase/firebase_service.dart';
+import 'data/local/database_service.dart';
 import 'domain/bluetooth_repository.dart';
 import 'presentation/blocs/connection/connection_bloc.dart';
 import 'presentation/blocs/scan/scan_cubit.dart';
@@ -81,23 +78,6 @@ Future<void> _ensurePermissions() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Inicializar Firebase
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-  print('✅ Firebase inicializado correctamente');
-
-  // 🔴 Habilitar Firestore Offline Persistence (almacenamiento local)
-  try {
-    FirebaseFirestore.instance.settings = const Settings(
-      persistenceEnabled: true,
-      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
-    );
-    print('✅ Firestore Offline Persistence habilitado - Funciona sin conexión');
-  } catch (e) {
-    print('⚠️ Error habilitando persistencia offline: $e');
-  }
-
   await _ensurePermissions();
 
   final BluetoothRepository sppRepo =
@@ -118,15 +98,15 @@ class MyApp extends StatelessWidget {
     final scheme = ColorScheme.fromSeed(
         seedColor: const Color(0xFF1463FF), brightness: Brightness.light);
 
-    // Crear instancia de FirebaseService
-    final firebaseService = FirebaseService();
+    // Crear instancia de base de datos local (SQLite)
+    final databaseService = DatabaseService();
 
     // Crear CommandRegistry compartido
     final commandRegistry = CommandRegistry();
     final bridgeRepo = _BridgeRepository(sppRepo, bleRepo);
 
-    return FirebaseProvider(
-      firebaseService: firebaseService,
+    return DatabaseProvider(
+      databaseService: databaseService,
       child: MultiBlocProvider(
         providers: [
           BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),

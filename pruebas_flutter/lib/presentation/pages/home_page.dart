@@ -3,13 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../domain/entities.dart';
-import '../../core/firebase_provider.dart';
+import '../../core/database_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
-import '../widgets/firebase_widgets.dart';
+import '../widgets/sqlite_widgets.dart';
 import 'device_info_page.dart';
 import 'configuration_page.dart';
 import 'weighing_history_page.dart';
@@ -300,9 +300,7 @@ class _HomePageState extends State<HomePage> {
                               const SizedBox(height: 8),
                               SizedBox(
                                 height: 280,
-                                child: MeasurementHistoryWidget(
-                                  sessionId: null,
-                                  deviceId: connState.device.id,
+                                child: BunchHistoryWidget(
                                   limit: 5,
                                 ),
                               ),
@@ -750,7 +748,6 @@ class _HomePageState extends State<HomePage> {
 
   /// 💾 Guardar pesaje en Firebase (optimizado - sin bloqueo)
   void _saveWeighing(BuildContext context, conn.Connected state) {
-    final firebaseService = FirebaseProvider.of(context);
     final weight = state.weight;
     final weightKg = weight?.kg;
 
@@ -782,12 +779,16 @@ class _HomePageState extends State<HomePage> {
     unawaited(
       Future.microtask(() async {
         try {
-          final nextNumber =
-              await firebaseService?.getNextBunchNumber(state.device.id);
+          final databaseService = DatabaseProvider.of(context);
 
-          await firebaseService?.addBunchEntry(
-            tableId: state.device.id,
-            number: nextNumber ?? 1,
+          // Obtener siguiente número desde SQLite
+          final bunches = await databaseService.getAllBunchEntries(limit: 1);
+          final nextNumber =
+              bunches.isEmpty ? 1 : (bunches.first['number'] as int) + 1;
+
+          // Guardar en SQLite
+          final localId = await databaseService.addBunchEntry(
+            number: nextNumber,
             weightKg: weightKg,
             weighingTime: DateTime.now(),
             cintaColor: '',
@@ -795,7 +796,7 @@ class _HomePageState extends State<HomePage> {
             lote: '',
             recusado: false,
           );
-          print('✅ Racimo #$nextNumber guardado exitosamente');
+          print('✅ Racimo #$nextNumber guardado localmente (ID: $localId)');
         } catch (e) {
           print('❌ Error guardando pesaje: $e');
           if (mounted) {
