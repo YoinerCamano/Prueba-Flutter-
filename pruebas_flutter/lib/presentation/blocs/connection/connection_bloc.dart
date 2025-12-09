@@ -5,6 +5,9 @@ import '../../../core/utils/number_parsing.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
 import '../../../data/datasources/command_registry.dart';
+import '../../../data/datasources/scale_model_registry.dart';
+import '../../../data/datasources/scale_profile_holder.dart';
+import '../../../data/datasources/scale_connection_strategy.dart';
 
 part 'connection_event.dart';
 part 'connection_state.dart';
@@ -12,8 +15,11 @@ part 'connection_state.dart';
 class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   final BluetoothRepository repo;
   final CommandRegistry _commandRegistry;
+  final ScaleModelRegistry _scaleRegistry;
+  final ScaleProfileHolder _profileHolder;
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
+  Timer? _modelTimeoutTimer;
 
   // Seguimiento de tracking de peso
   bool _weightCommandInFlight = false;
@@ -21,24 +27,33 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   static const _weightTimeout = Duration(milliseconds: 120);
   static const _trackingGap = Duration(milliseconds: 0);
 
-  // Timeout de inicialización (ZA1 / MSWU)
+  // Timeout de inicializacion (ZA1 / MSWU)
   Timer? _initTimeoutTimer;
   static const _initTimeout = Duration(milliseconds: 2000);
   String? _lastInitCommand;
 
-  // Seguimiento de inicialización (ZA1, MSWU, y cambios de unidad)
+  // Seguimiento de inicializacion (ZA1, MSWU, y cambios de unidad)
   int _initializationStep = 0;
   // 0: ninguno
   // 1: esperando respuesta ZA1
   // 2: esperando respuesta MSWU (consulta unidad inicial)
-  // 3: esperando confirmación de cambio de unidad (sin timeout)
+  // 3: esperando confirmacion de cambio de unidad (sin timeout)
 
-  // 🚦 FLAG DE SUSPENSIÓN DE POLLING DE PESO
-  // Cuando true: no se envían comandos de peso ni se procesan lecturas
+  static const _modelCommand = '{ZN}';
+  bool _waitingModelResponse = false;
+  late ScaleDescriptor _activeScale;
+
+  // 🎯 ESTRATEGIA DE CONEXIÓN SEGÚN MODELO
+  ScaleConnectionStrategy? _strategy;
+
+  // FLAG DE SUSPENSION DE POLLING DE PESO
+  // Cuando true: no se envian comandos de peso ni se procesan lecturas
   bool _pollingSuspended = false;
 
-  ConnectionBloc(this.repo, this._commandRegistry)
+  ConnectionBloc(this.repo, this._commandRegistry, this._scaleRegistry,
+      this._profileHolder)
       : super(const ConnectionState.disconnected()) {
+    _activeScale = ScaleModelRegistry.unknown;
     on<ConnectRequested>(_onConnect);
     on<DisconnectRequested>(_onDisconnect);
     on<RawLineArrived>(_onRawLine);
@@ -52,9 +67,19 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   Future<void> _onConnect(
       ConnectRequested e, Emitter<ConnectionState> emit) async {
+    _activeScale = _scaleRegistry.guessFromDevice(e.device);
+    _profileHolder.update(_activeScale);
+
+    // 🎯 Crear estrategia según el modelo detectado
+    _strategy = ScaleStrategyFactory.create(
+      repository: repo,
+      descriptor: _activeScale,
+    );
+
     emit(ConnectionState.connecting(device: e.device));
     await _sub?.cancel();
     _pollTimer?.cancel();
+    _waitingModelResponse = false;
 
     try {
       await repo.connect(e.device.id);
@@ -77,7 +102,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           add(RawLineArrived('__DISCONNECTED__'));
         });
 
-        emit(ConnectionState.connected(device: e.device));
+        emit(ConnectionState.connected(device: e.device, scale: _activeScale));
 
         // 🎯 LIMPIO: Solo inicializar variables de peso
         print('✅ Conexión establecida → Listo para polling de peso');
@@ -95,54 +120,126 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   Future<void> _onDisconnect(
       DisconnectRequested e, Emitter<ConnectionState> emit) async {
-    print('🔌 === INICIANDO DESCONEXIÓN COMPLETA ===');
+    print('?Y"O === INICIANDO DESCONEXION COMPLETA ===');
 
-    // 1. Detener polling y timers
     _pollTimer?.cancel();
     _pollTimer = null;
     _weightTimeoutTimer?.cancel();
     _weightCommandInFlight = false;
+    _modelTimeoutTimer?.cancel();
+    _waitingModelResponse = false;
 
-    // 2. Cancelar suscripción al stream de datos
     if (_sub != null) {
-      print('📴 Cancelando suscripción al stream de datos...');
+      print('?Y"? Cancelando suscripcion al stream de datos...');
       await _sub?.cancel();
       _sub = null;
     }
 
-    // 3. Limpiar CommandRegistry
-    print('🧹 Limpiando registro de comandos...');
+    print('?Y?? Limpiando registro de comandos...');
     _commandRegistry.purgeTimeouts();
 
-    // 4. Resetear estadísticas y variables de tracking
-    // (ninguna para este bloc - solo peso)
-
-    // 🚀 Resetear estado de polling
     _pollingSuspended = false;
+    _activeScale = ScaleModelRegistry.unknown;
+    _profileHolder.update(_activeScale);
+    _strategy?.reset();
+    _strategy = null;
 
-    // 5. Desconectar del repositorio (esto llamará al BLE adapter)
-    print('🔌 Desconectando del dispositivo...');
+    print('?Y"O Desconectando del dispositivo...');
     try {
       await repo.disconnect();
-      print('✅ Dispositivo desconectado correctamente');
+      print('?o. Dispositivo desconectado correctamente');
     } catch (error) {
-      print('⚠️ Error durante desconexión: $error');
+      print('?s???? Error durante desconexion: $error');
     }
 
-    // 6. Emitir estado de desconectado
     emit(const ConnectionState.disconnected());
-    print('✅ === DESCONEXIÓN COMPLETA FINALIZADA ===');
+    print('?o. === DESCONEXION COMPLETA FINALIZADA ===');
   }
 
   void _onRawLine(RawLineArrived e, Emitter<ConnectionState> emit) {
     final s = state;
     if (s is! Connected) return;
-    final line = e.line.trim();
+    final rawLine = e.line.trim();
 
-    if (line == '__DISCONNECTED__') {
+    print(
+        '📥 RAW: "$rawLine" | Estrategia: ${_strategy?.descriptor.id} | InFlight: $_weightCommandInFlight');
+
+    if (rawLine == '__DISCONNECTED__') {
       _weightTimeoutTimer?.cancel();
       _weightCommandInFlight = false;
+      _strategy?.reset();
       emit(const ConnectionState.disconnected());
+      return;
+    }
+
+    // 🎯 DELEGAR PROCESAMIENTO A LA ESTRATEGIA DEL MODELO
+    final processedLine = _strategy?.processRawLine(rawLine);
+
+    if (processedLine == null) {
+      // La estrategia necesita más datos (fragmentación en progreso)
+      // Bloquear siguiente comando si la estrategia lo requiere
+      if (_strategy?.needsCommandTracking('{RW}') ?? false) {
+        _weightCommandInFlight = true;
+        print(
+            '🔒 BLOQUEADO: Esperando más fragmentos, _weightCommandInFlight = true');
+      }
+      return;
+    }
+
+    // Línea completa lista para procesar
+    print('📨 PROCESANDO: "$processedLine"');
+    _processCompleteLine(processedLine, s, emit);
+
+    // NOTA: _completeWeightCommandCycle() se llama dentro de _processCompleteLine
+    // cuando detecta un peso válido, sobrecarga o número
+  }
+
+  void _processCompleteLine(
+      String line, Connected s, Emitter<ConnectionState> emit) {
+    print('📥 Procesando línea completa: "$line"');
+
+    // 🔍 DETECCIÓN DE RESPUESTA AL COMANDO {ZN} (modelo de báscula)
+    if (_waitingModelResponse) {
+      _modelTimeoutTimer?.cancel();
+      _waitingModelResponse = false;
+
+      print('✅ Respuesta de modelo recibida: "$line"');
+      final descriptor = _scaleRegistry.resolveFromModelResponse(line,
+          hintTransport: _scaleRegistry.chooseTransport(
+              deviceId: s.device.id, descriptor: _activeScale));
+      _activeScale = descriptor;
+      _profileHolder.update(descriptor);
+
+      // 🎯 Actualizar estrategia con el modelo detectado
+      _strategy = ScaleStrategyFactory.create(
+        repository: repo,
+        descriptor: descriptor,
+      );
+
+      emit(s.copyWith(scale: descriptor));
+      _kickoffInitialization();
+      return;
+    }
+
+    // Fallback: si llega una línea con el modelo y ya no estamos esperando, detectarlo igual
+    final modelHint = line.toUpperCase();
+    final looksLikeModel =
+        modelHint.contains('EZIWEIGH') || modelHint.contains('EZI');
+    if (!_waitingModelResponse && looksLikeModel) {
+      final descriptor = _scaleRegistry.resolveFromModelResponse(line,
+          hintTransport: _scaleRegistry.chooseTransport(
+              deviceId: s.device.id, descriptor: _activeScale));
+      _activeScale = descriptor;
+      _profileHolder.update(descriptor);
+
+      // 🎯 Actualizar estrategia con el modelo detectado
+      _strategy = ScaleStrategyFactory.create(
+        repository: repo,
+        descriptor: descriptor,
+      );
+
+      emit(s.copyWith(scale: descriptor));
+      _kickoffInitialization();
       return;
     }
 
@@ -242,6 +339,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     final weightRegex = RegExp(r'\[(U?-?\d+\.?\d*\s*)\]');
     final weightMatch = weightRegex.firstMatch(line);
 
+    print('🔍 Buscando peso en: "$line" | Match: ${weightMatch != null}');
+
     if (weightMatch != null) {
       final fullValueStr = (weightMatch.group(1) ?? '').trim();
       double? value;
@@ -292,50 +391,65 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         return;
       }
 
-      final isInitializationCommand = e.command == '{ZA1}' ||
-          e.command == '{MSWU}' ||
-          e.command == ScaleCommand.setUnitKg.code ||
-          e.command == ScaleCommand.setUnitLb.code;
-      final isWeightCommand =
-          e.command == ScaleCommand.readWeight.code; // '{RW}'
+      final normalized = _normalizeCommand(e.command);
+      print(
+          '🔧 Comando solicitado: "${e.command}" | Normalizado: "$normalized" | Modelo: ${_activeScale.id}');
+
+      if (!_scaleRegistry.isCommandSupported(_activeScale, normalized)) {
+        print('?s? Command $normalized no soportado por ${_activeScale.id}');
+        if (_waitingModelResponse && normalized == _modelCommand) {
+          _waitingModelResponse = false;
+          _kickoffInitialization();
+        }
+        return;
+      }
+
+      final commandToSend = _scaleRegistry.mapCommand(_activeScale, normalized);
+      print('📋 Comando después de mapeo: "$commandToSend"');
+
+      final isInitializationCommand = commandToSend == '{ZA1}' ||
+          commandToSend == '{MSWU}' ||
+          commandToSend == ScaleCommand.setUnitKg.code ||
+          commandToSend == ScaleCommand.setUnitLb.code;
+      final isWeightCommand = commandToSend == ScaleCommand.readWeight.code ||
+          commandToSend == 'RW'; // '{RW}' o RW plano
 
       if (isInitializationCommand) {
-        print('📤 INIT: Enviando ${e.command}');
-        _lastInitCommand = e.command;
-        final isSetUnitCommand = e.command == ScaleCommand.setUnitKg.code ||
-            e.command == ScaleCommand.setUnitLb.code;
+        print('?Y"? INIT: Enviando $commandToSend');
+        _lastInitCommand = commandToSend;
+        final isSetUnitCommand = commandToSend == ScaleCommand.setUnitKg.code ||
+            commandToSend == ScaleCommand.setUnitLb.code;
 
-        if (e.command == '{ZA1}') {
+        if (commandToSend == '{ZA1}') {
           _initializationStep = 1; // Esperando respuesta ZA1
           _startInitTimeout(1);
-        } else if (e.command == '{MSWU}') {
+        } else if (commandToSend == '{MSWU}') {
           _initializationStep = 2; // Esperando respuesta MSWU
           _startInitTimeout(2);
         } else if (isSetUnitCommand) {
-          // 🟢 Cambio de unidad: esperar confirmación ^ (SIN TIMEOUT)
           _initTimeoutTimer?.cancel();
           _initializationStep = 3;
           print(
-              '📤 Esperando confirmación de cambio de unidad (sin timeout)...');
+              '?Y"? Esperando confirmacion de cambio de unidad (sin timeout)...');
         }
       } else if (isWeightCommand) {
-        print('📤 PESO: Enviando ${e.command}');
+        print('?Y"? PESO: Enviando $commandToSend');
         _weightCommandInFlight = true;
         _startWeightTimeoutWatchdog();
       } else {
-        print('📤 COMANDO: Enviando ${e.command}');
+        print('?Y"? COMANDO: Enviando $commandToSend');
       }
 
       // Registrar en CommandRegistry
-      _commandRegistry.registerOutgoing(e.command);
+      _commandRegistry.registerOutgoing(commandToSend);
 
       // Enviar comando
-      await repo.sendCommand(e.command);
-      print('✅ PESO: Comando ${e.command} enviado');
+      await repo.sendCommand(commandToSend);
+      print('?o. PESO: Comando $commandToSend enviado');
     } catch (err) {
       final errorMsg = err.toString().toLowerCase();
 
-      if (errorMsg.contains('no hay conexión') ||
+      if (errorMsg.contains('no hay conexi') ||
           errorMsg.contains('no conectado') ||
           errorMsg.contains('socket') ||
           errorMsg.contains('closed') ||
@@ -379,16 +493,52 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _pollTimer?.cancel();
     _weightTimeoutTimer?.cancel();
     _initTimeoutTimer?.cancel();
+    _modelTimeoutTimer?.cancel();
 
     _pollingSuspended = false;
     _weightCommandInFlight = false;
     _initializationStep = 0;
+    _waitingModelResponse = false;
 
-    print('🎯 === INICIANDO POLLING CON INICIALIZACIÓN ===');
+    print('?YZ? === INICIANDO POLLING CON INICIALIZACION ===');
 
-    // Paso 1: Enviar {ZA1} para habilitar confirmación de comandos
-    print('📤 Paso 1: Enviando {ZA1} (confirmación de comandos)');
-    add(SendCommandRequested('{ZA1}'));
+    if (_scaleRegistry.isCommandSupported(_activeScale, _modelCommand)) {
+      _waitingModelResponse = true;
+      print('?Y"? Paso 0: Enviando $_modelCommand (consulta de modelo)');
+      add(SendCommandRequested(_modelCommand));
+      _modelTimeoutTimer = Timer(const Duration(milliseconds: 1500), () {
+        if (_waitingModelResponse) {
+          print('??? Timeout esperando modelo, continuando inicializacion');
+          _waitingModelResponse = false;
+          _kickoffInitialization();
+        }
+      });
+    } else {
+      _kickoffInitialization();
+    }
+  }
+
+  void _kickoffInitialization() {
+    final supportsAck =
+        _scaleRegistry.isCommandSupported(_activeScale, '{ZA1}');
+    final supportsUnits =
+        _scaleRegistry.isCommandSupported(_activeScale, '{MSWU}');
+
+    if (supportsAck) {
+      print('?Y"? Paso 1: Enviando {ZA1} (confirmacion de comandos)');
+      add(SendCommandRequested('{ZA1}'));
+      return;
+    }
+
+    if (supportsUnits) {
+      print('?Y"? Paso 1: Sin ACK, consultando unidad {MSWU}');
+      add(SendCommandRequested('{MSWU}'));
+      return;
+    }
+
+    print('?Y"? Modelo sin init especial, iniciando polling de peso');
+    _initializationStep = 0;
+    _sendNextWeightCommand();
   }
 
   void _onInitTimeoutExpired(
@@ -426,7 +576,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _pollTimer = null;
     _weightTimeoutTimer?.cancel();
     _initTimeoutTimer?.cancel();
+    _modelTimeoutTimer?.cancel();
     _weightCommandInFlight = false;
+    _waitingModelResponse = false;
+    _strategy?.reset();
     _pollingSuspended = true;
 
     print('🛑 Polling de peso detenido');
@@ -443,7 +596,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final isConnected = await repo.isConnected();
 
       if (isConnected) {
-        emit(ConnectionState.connected(device: e.device));
+        _activeScale = _scaleRegistry.guessFromDevice(e.device);
+        _profileHolder.update(_activeScale);
+        emit(ConnectionState.connected(device: e.device, scale: _activeScale));
 
         _sub = repo.rawStream().listen((line) {
           add(RawLineArrived(line));
@@ -480,8 +635,10 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
             id: 'DE:FD:76:A4:D7:ED', // MAC conocido de la S3
             name: 'S3 (Conectado)');
 
+        _activeScale = ScaleModelRegistry.truTestS3;
+        _profileHolder.update(_activeScale);
         // Emitir estado conectado
-        emit(ConnectionState.connected(device: s3Device));
+        emit(ConnectionState.connected(device: s3Device, scale: _activeScale));
 
         // Configurar escucha de datos
         _sub = repo.rawStream().listen((line) {
@@ -504,29 +661,32 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
   @override
   Future<void> close() async {
-    print('🔒 === CERRANDO CONNECTION BLOC ===');
+    print('=== CERRANDO CONNECTION BLOC ===');
 
     // 1. Cancelar timers
     _pollTimer?.cancel();
     _weightTimeoutTimer?.cancel();
+    _modelTimeoutTimer?.cancel();
 
-    // 2. Cancelar suscripción
+    // 2. Cancelar suscripcion
     await _sub?.cancel();
 
     // 3. Desconectar si es necesario
     try {
       final isConnected = await repo.isConnected();
       if (isConnected) {
-        print('🔌 Desconectando...');
+        print('?Y"O Desconectando...');
         await repo.disconnect();
       }
     } catch (error) {
-      print('⚠️ Error durante close: $error');
+      print('?s???? Error durante close: $error');
     }
 
-    print('✅ ConnectionBloc cerrado');
+    print('?o. ConnectionBloc cerrado');
     return super.close();
   }
+
+  String _normalizeCommand(String raw) => raw.trim().toUpperCase();
 
   void _startWeightTimeoutWatchdog() {
     _weightTimeoutTimer?.cancel();
@@ -552,7 +712,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   }
 
   void _sendNextWeightCommand() {
-    if (_pollingSuspended || _weightCommandInFlight) return;
+    if (_pollingSuspended || _weightCommandInFlight || _waitingModelResponse) {
+      return;
+    }
     add(SendCommandRequested(ScaleCommand.readWeight.code));
   }
 }
