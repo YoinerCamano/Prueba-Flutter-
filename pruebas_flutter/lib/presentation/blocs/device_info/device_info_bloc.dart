@@ -5,8 +5,6 @@ import '../../../core/utils/number_parsing.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
 import '../../../data/datasources/command_registry.dart';
-import '../../../data/datasources/scale_model_registry.dart';
-import '../../../data/datasources/scale_profile_holder.dart';
 
 part 'device_info_event.dart';
 part 'device_info_state.dart';
@@ -16,8 +14,6 @@ part 'device_info_state.dart';
 class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
   final BluetoothRepository repo;
   final CommandRegistry _commandRegistry;
-  final ScaleProfileHolder _profileHolder;
-  final ScaleModelRegistry _scaleRegistry;
   StreamSubscription<String>? _sub;
 
   String? _lastCommandSent;
@@ -25,8 +21,7 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
   Timer? _responseTimeoutTimer;
   final List<String> _pendingQueue = [];
 
-  DeviceInfoBloc(
-      this.repo, this._commandRegistry, this._profileHolder, this._scaleRegistry)
+  DeviceInfoBloc(this.repo, this._commandRegistry)
       : super(const DeviceInfoState()) {
     on<DeviceInfoStartListening>(_onStartListening);
     on<DeviceInfoStopListening>(_onStopListening);
@@ -61,40 +56,32 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
 
   Future<void> _onSendCommand(
       DeviceInfoSendCommandRequested e, Emitter<DeviceInfoState> emit) async {
-    final normalized = _normalizeCommand(e.command);
-    final descriptor = _profileHolder.current;
-
+    // Evitar cruce: si estamos esperando respuesta, encolar
     if (_waitingForResponse) {
-      _pendingQueue.add(normalized);
+      _pendingQueue.add(e.command);
       print(
-          '?Y"? DeviceInfoBloc: Comando $normalized encolado (esperando respuesta previa)');
+          '📦 DeviceInfoBloc: Comando ${e.command} encolado (esperando respuesta previa)');
       return;
     }
 
-    if (!_scaleRegistry.isCommandSupported(descriptor, normalized)) {
-      print('?s? Command $normalized no soportado para ${descriptor.id}');
-      _sendNextFromQueue();
-      return;
-    }
-
-    final commandToSend = _scaleRegistry.mapCommand(descriptor, normalized);
-
-    _lastCommandSent = commandToSend;
+    // Solo comandos técnicos y batería.
+    _lastCommandSent = e.command;
     _waitingForResponse = true;
-    _commandRegistry.registerOutgoing(commandToSend);
+    _commandRegistry.registerOutgoing(e.command);
 
-    print('?Y"? DeviceInfoBloc: Enviando comando $commandToSend...');
+    print('📤 DeviceInfoBloc: Enviando comando ${e.command}...');
 
+    // Timeout prudente para info técnica.
     _responseTimeoutTimer?.cancel();
     _responseTimeoutTimer = Timer(const Duration(milliseconds: 500), () {
       if (_waitingForResponse) {
-        print('??? DeviceInfoBloc: Timeout esperando respuesta de $commandToSend');
+        print('⏰ DeviceInfoBloc: Timeout esperando respuesta de ${e.command}');
         _waitingForResponse = false;
         _sendNextFromQueue();
       }
     });
 
-    await repo.sendCommand(commandToSend);
+    await repo.sendCommand(e.command);
   }
 
   void _sendNextFromQueue() {
@@ -251,8 +238,6 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
     if (RegExp(r'^[Uu]').hasMatch(trimmed)) return true;
     return false;
   }
-
-  String _normalizeCommand(String raw) => raw.trim().toUpperCase();
 
   bool _isTechnicalCommand(String cmd) {
     return cmd == '{TTCSER}' ||

@@ -6,9 +6,7 @@ abstract class ConnectionState extends Equatable {
   List<Object?> get props => [];
   const factory ConnectionState.disconnected() = Disconnected;
   factory ConnectionState.connecting({required BtDevice device}) = Connecting;
-  factory ConnectionState.connected(
-          {required BtDevice device, required ScaleDescriptor scale}) =
-      Connected;
+  factory ConnectionState.connected({required BtDevice device}) = Connected;
   factory ConnectionState.error(String message) = ConnectionError;
 }
 
@@ -28,7 +26,6 @@ class Connected extends ConnectionState {
   final WeightReading? weight;
   final BatteryStatus? batteryVoltage; // Para voltaje {BV}
   final BatteryStatus? batteryPercent; // Para porcentaje {BC}
-  final ScaleDescriptor scale;
 
   // 🔧 Información técnica del dispositivo
   final String? serialNumber; // {TTCSER}
@@ -41,7 +38,6 @@ class Connected extends ConnectionState {
 
   const Connected({
     required this.device,
-    required this.scale,
     this.weight,
     this.batteryVoltage,
     this.batteryPercent,
@@ -65,11 +61,9 @@ class Connected extends ConnectionState {
     String? microvoltsPerDivision,
     String? adcNoise,
     String? weightUnit,
-    ScaleDescriptor? scale,
   }) =>
       Connected(
         device: device,
-        scale: scale ?? this.scale,
         weight: weight ?? this.weight,
         batteryVoltage: batteryVoltage ?? this.batteryVoltage,
         batteryPercent: batteryPercent ?? this.batteryPercent,
@@ -96,7 +90,6 @@ class Connected extends ConnectionState {
         microvoltsPerDivision,
         adcNoise,
         weightUnit,
-        scale,
       ];
 }
 

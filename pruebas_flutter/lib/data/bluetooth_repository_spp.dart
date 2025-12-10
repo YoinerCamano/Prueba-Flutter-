@@ -225,33 +225,19 @@ class BluetoothAdapterSpp {
               '📥 Raw data S3: "${chunk.replaceAll('\r', '\\r').replaceAll('\n', '\\n')}"');
 
           _lineBuffer.write(chunk);
-          final bufferContent = _lineBuffer.toString();
+          final parts = _lineBuffer.toString().split(RegExp(r'\r?\n'));
 
-          // Si hay saltos de línea, procesar por líneas completas
-          if (bufferContent.contains('\n') || bufferContent.contains('\r')) {
-            final parts = bufferContent.split(RegExp(r'\r?\n'));
-
-            for (int i = 0; i < parts.length - 1; i++) {
-              final line = parts[i].trim();
-              if (line.isNotEmpty) {
-                print('📊 Línea S3 completa: "$line"');
-                _controller.add(line);
-              }
-            }
-
-            _lineBuffer
-              ..clear()
-              ..write(parts.last);
-          } else {
-            // Sin saltos de línea: emitir fragmentos directamente (EziWeigh7)
-            // Solo si hay contenido que no sea solo espacios
-            final trimmed = bufferContent.trim();
-            if (trimmed.isNotEmpty) {
-              print('📦 Fragmento directo: "$trimmed"');
-              _controller.add(trimmed);
-              _lineBuffer.clear();
+          for (int i = 0; i < parts.length - 1; i++) {
+            final line = parts[i].trim();
+            if (line.isNotEmpty) {
+              print('📊 Línea S3 completa: "$line"');
+              _controller.add(line);
             }
           }
+
+          _lineBuffer
+            ..clear()
+            ..write(parts.last);
         },
         onDone: () {
           print('🔌 Conexión S3 terminada');
@@ -263,23 +249,16 @@ class BluetoothAdapterSpp {
         },
       );
 
-      // Inicialización específica para S3 (no para EziWeigh7)
-      // La EziWeigh7 no necesita wake-up, responde inmediatamente
-      final needsWakeup = true; // TODO: Detectar modelo y condicionar
-
-      if (needsWakeup) {
-        print('⏳ Pausa antes del wake-up (2 segundos)...');
-        await Future.delayed(const Duration(milliseconds: 2000));
-        try {
-          print('📤 Enviando comando wake-up a S3...');
-          conn.output.add(utf8.encode('\r\n'));
-          await conn.output.allSent;
-          print('✅ Wake-up enviado');
-        } catch (e) {
-          print('⚠️ Advertencia comando wake-up: $e');
-        }
-      } else {
-        print('ℹ️ EziWeigh7 detectada, omitiendo wake-up');
+      // Inicialización específica para S3
+      print('⏳ Pausa antes del wake-up (2 segundos)...');
+      await Future.delayed(const Duration(milliseconds: 2000));
+      try {
+        print('📤 Enviando comando wake-up a S3...');
+        conn.output.add(utf8.encode('\r\n'));
+        await conn.output.allSent;
+        print('✅ Wake-up enviado');
+      } catch (e) {
+        print('⚠️ Advertencia comando wake-up: $e');
       }
 
       print('');
