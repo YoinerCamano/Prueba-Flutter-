@@ -5,6 +5,8 @@ import '../../../core/utils/number_parsing.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
 import '../../../data/datasources/command_registry.dart';
+import '../../../data/datasources/scale_model_registry.dart';
+import '../../../data/datasources/scale_profile_holder.dart';
 
 part 'device_info_event.dart';
 part 'device_info_state.dart';
@@ -14,6 +16,8 @@ part 'device_info_state.dart';
 class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
   final BluetoothRepository repo;
   final CommandRegistry _commandRegistry;
+  final ScaleProfileHolder _profileHolder;
+  final ScaleModelRegistry _scaleRegistry;
   StreamSubscription<String>? _sub;
 
   String? _lastCommandSent;
@@ -21,7 +25,8 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
   Timer? _responseTimeoutTimer;
   final List<String> _pendingQueue = [];
 
-  DeviceInfoBloc(this.repo, this._commandRegistry)
+  DeviceInfoBloc(
+      this.repo, this._commandRegistry, this._profileHolder, this._scaleRegistry)
       : super(const DeviceInfoState()) {
     on<DeviceInfoStartListening>(_onStartListening);
     on<DeviceInfoStopListening>(_onStopListening);
