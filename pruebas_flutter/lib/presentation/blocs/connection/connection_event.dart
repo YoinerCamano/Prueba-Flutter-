@@ -11,10 +11,12 @@ enum ScaleCommand {
   cellSpecifications('{SCLS}'),
   resetZero('{SCZERO}'),
   adcNoise('{SCAV}'),
-  weightUnit('{MSWU}'),
-  setUnitKg('{MSWU0}'),
-  setUnitLb('{MSWU1}'),
-  enableAcknowledgment('{ZA1}'); // Habilita respuestas de confirmación "^"
+  weightUnit('{SPWU}'),
+  setUnitKg('{SPWU0}'),
+  setUnitLb('{SPWU1}'),
+  enableAcknowledgment('{ZA1}'), // Habilita respuestas de confirmación "^"
+  getErrors('{ZE1}'), // Obtener errores de la báscula
+  setCarriageReturn('{ZC1}'); // Establecer retorno de carro
 
   const ScaleCommand(this.code);
   final String code;
@@ -63,7 +65,7 @@ class CheckManualConnectionRequested extends ConnectionEvent {
 /// Nuevo evento para detectar conexiones automáticas al iniciar
 class CheckAutoConnectionRequested extends ConnectionEvent {}
 
-/// Timeout de inicialización (ZA1 / MSWU)
+/// Timeout de inicialización (ZA1 / SPWU)
 class InitTimeoutExpired extends ConnectionEvent {
   final int step;
   InitTimeoutExpired(this.step);

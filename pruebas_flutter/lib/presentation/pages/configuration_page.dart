@@ -67,7 +67,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
         _currentUnit = currentState.weightUnit;
         _isLoading = false;
       });
-      return; // ✅ Ya tenemos la unidad, no enviar {MSWU}
+      return; // ✅ Ya tenemos la unidad, no enviar {SPWU}
     }
 
     // Escuchar cambios en el estado del BLoC (SIEMPRE activo)
@@ -106,7 +106,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     });
 
     // Enviar comando de cambio directamente
-    final changeCommand = targetUnit == 'kg' ? '{MSWU0}' : '{MSWU1}';
+    final changeCommand = targetUnit == 'kg' ? '{SPWU0}' : '{SPWU1}';
     print('📤 Enviando comando de cambio $changeCommand...');
     _connectionBloc.add(conn.SendCommandRequested(changeCommand));
 

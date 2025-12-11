@@ -54,20 +54,36 @@ class CommandRegistry {
       key: 'ruido_cad',
       description: 'Ruido CAD (conversor A/D)',
     ),
-    '{MSWU}': const DeviceCommand(
-      code: '{MSWU}',
+    '{SPWU}': const DeviceCommand(
+      code: '{SPWU}',
       key: 'unidad_peso',
       description: 'Consultar unidad de peso',
     ),
-    '{MSWU0}': const DeviceCommand(
-      code: '{MSWU0}',
+    '{SPWU0}': const DeviceCommand(
+      code: '{SPWU0}',
       key: 'cambiar_unidad_kg',
       description: 'Cambiar unidad a kilogramos',
     ),
-    '{MSWU1}': const DeviceCommand(
-      code: '{MSWU1}',
+    '{SPWU1}': const DeviceCommand(
+      code: '{SPWU1}',
       key: 'cambiar_unidad_lb',
       description: 'Cambiar unidad a libras',
+    ),
+    '{ZA1}': const DeviceCommand(
+      code: '{ZA1}',
+      key: 'habilitar_ack',
+      description: 'Habilitar confirmación de comandos',
+      timeout: Duration(milliseconds: 2000),
+    ),
+    '{ZE1}': const DeviceCommand(
+      code: '{ZE1}',
+      key: 'consultar_errores',
+      description: 'Obtener errores de la báscula',
+    ),
+    '{ZC1}': const DeviceCommand(
+      code: '{ZC1}',
+      key: 'retorno_carro',
+      description: 'Configurar retorno de carro',
     ),
   };
 

@@ -8,6 +8,8 @@ import 'data/bluetooth_repository_spp.dart';
 import 'data/ble/ble_adapter.dart';
 import 'data/ble/bluetooth_repository_ble.dart';
 import 'data/datasources/command_registry.dart';
+import 'data/datasources/scale_model_registry.dart';
+import 'data/datasources/scale_profile_holder.dart';
 import 'data/local/database_service.dart';
 import 'domain/bluetooth_repository.dart';
 import 'presentation/blocs/connection/connection_bloc.dart';
@@ -80,18 +82,41 @@ void main() async {
 
   await _ensurePermissions();
 
+  final scaleModelRegistry = ScaleModelRegistry();
+  final scaleProfileHolder = ScaleProfileHolder(ScaleModelRegistry.unknown);
   final BluetoothRepository sppRepo =
       BluetoothRepositorySpp(BluetoothAdapterSpp());
   final BluetoothRepository bleRepo = BluetoothRepositoryBle(BleAdapter(
-      config: BleUartConfig.truTest())); // Configuración específica para S3
+      config: BleUartConfig.truTest())); // Configuraci?n espec?fica para S3
+  final commandRegistry = CommandRegistry();
+  final bridgeRepo = _BridgeRepository(
+      sppRepo, bleRepo, scaleModelRegistry, scaleProfileHolder);
 
-  runApp(MyApp(sppRepo: sppRepo, bleRepo: bleRepo));
+  runApp(MyApp(
+    sppRepo: sppRepo,
+    bleRepo: bleRepo,
+    scaleModelRegistry: scaleModelRegistry,
+    scaleProfileHolder: scaleProfileHolder,
+    commandRegistry: commandRegistry,
+    bridgeRepo: bridgeRepo,
+  ));
 }
 
 class MyApp extends StatelessWidget {
   final BluetoothRepository sppRepo;
   final BluetoothRepository bleRepo;
-  const MyApp({super.key, required this.sppRepo, required this.bleRepo});
+  final ScaleModelRegistry scaleModelRegistry;
+  final ScaleProfileHolder scaleProfileHolder;
+  final CommandRegistry commandRegistry;
+  final BluetoothRepository bridgeRepo;
+  const MyApp(
+      {super.key,
+      required this.sppRepo,
+      required this.bleRepo,
+      required this.scaleModelRegistry,
+      required this.scaleProfileHolder,
+      required this.commandRegistry,
+      required this.bridgeRepo});
 
   @override
   Widget build(BuildContext context) {
@@ -101,19 +126,17 @@ class MyApp extends StatelessWidget {
     // Crear instancia de base de datos local (SQLite)
     final databaseService = DatabaseService();
 
-    // Crear CommandRegistry compartido
-    final commandRegistry = CommandRegistry();
-    final bridgeRepo = _BridgeRepository(sppRepo, bleRepo);
-
     return DatabaseProvider(
       databaseService: databaseService,
       child: MultiBlocProvider(
         providers: [
           BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
           BlocProvider(
-              create: (_) => ConnectionBloc(bridgeRepo, commandRegistry)),
+              create: (_) => ConnectionBloc(bridgeRepo, commandRegistry,
+                  scaleModelRegistry, scaleProfileHolder)),
           BlocProvider(
-              create: (_) => DeviceInfoBloc(bridgeRepo, commandRegistry)),
+              create: (_) => DeviceInfoBloc(bridgeRepo, commandRegistry,
+                  scaleProfileHolder, scaleModelRegistry)),
         ],
         child: MaterialApp(
           title: 'Pruebas Flutter',
@@ -133,18 +156,19 @@ class MyApp extends StatelessWidget {
 class _BridgeRepository implements BluetoothRepository {
   final BluetoothRepository spp;
   final BluetoothRepository ble;
+  final ScaleModelRegistry registry;
+  final ScaleProfileHolder profileHolder;
   BluetoothRepository? _active;
 
-  _BridgeRepository(this.spp, this.ble);
+  _BridgeRepository(this.spp, this.ble, this.registry, this.profileHolder);
 
   BluetoothRepository _pick(String id) {
-    // Tru-Test S3 es BLE aunque tenga formato MAC
-    if (id.toUpperCase().contains('DE:FD:76:A4:D7:ED')) {
-      print('🎯 Detectada S3 - usando BLE');
-      return ble;
-    }
-    // Resto de dispositivos por formato
-    return id.contains(':') ? spp : ble;
+    final descriptor = profileHolder.current;
+    final transport =
+        registry.chooseTransport(deviceId: id, descriptor: descriptor);
+    print(
+        '?Y"? Seleccionando transporte ${transport.name} para ${descriptor.id} ($id)');
+    return transport == TransportType.classic ? spp : ble;
   }
 
   @override

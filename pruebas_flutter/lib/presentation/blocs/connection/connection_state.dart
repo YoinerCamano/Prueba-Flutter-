@@ -34,7 +34,7 @@ class Connected extends ConnectionState {
   final String? cellLoadmVV; // {SCLS} - Primer valor
   final String? microvoltsPerDivision; // {SCLS} - Segundo valor
   final String? adcNoise; // {SCAV} - Ruido CAD (conversor A/D)
-  final String? weightUnit; // {MSWU} - Unidad de peso configurada (kg/lb)
+  final String? weightUnit; // {SPWU} - Unidad de peso configurada (kg/lb)
 
   const Connected({
     required this.device,

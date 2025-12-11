@@ -5,6 +5,8 @@ import '../../../core/utils/number_parsing.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
 import '../../../data/datasources/command_registry.dart';
+import '../../../data/datasources/scale_model_registry.dart';
+import '../../../data/datasources/scale_profile_holder.dart';
 
 part 'connection_event.dart';
 part 'connection_state.dart';
@@ -12,6 +14,8 @@ part 'connection_state.dart';
 class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   final BluetoothRepository repo;
   final CommandRegistry _commandRegistry;
+  final ScaleModelRegistry _scaleRegistry;
+  final ScaleProfileHolder _profileHolder;
   StreamSubscription<String>? _sub;
   Timer? _pollTimer;
 
@@ -20,24 +24,30 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   Timer? _weightTimeoutTimer;
   static const _weightTimeout = Duration(milliseconds: 120);
   static const _trackingGap = Duration(milliseconds: 0);
+  String? _pendingWeightFragment;
 
-  // Timeout de inicialización (ZA1 / MSWU)
+  // Timeout de inicialización (ZA1 / SPWU)
   Timer? _initTimeoutTimer;
   static const _initTimeout = Duration(milliseconds: 2000);
   String? _lastInitCommand;
 
-  // Seguimiento de inicialización (ZA1, MSWU, y cambios de unidad)
+  // Seguimiento de inicialización (ZA1, SPWU, y cambios de unidad)
   int _initializationStep = 0;
   // 0: ninguno
   // 1: esperando respuesta ZA1
-  // 2: esperando respuesta MSWU (consulta unidad inicial)
+  // 2: esperando respuesta SPWU (consulta unidad inicial)
   // 3: esperando confirmación de cambio de unidad (sin timeout)
 
   // 🚦 FLAG DE SUSPENSIÓN DE POLLING DE PESO
   // Cuando true: no se envían comandos de peso ni se procesan lecturas
   bool _pollingSuspended = false;
 
-  ConnectionBloc(this.repo, this._commandRegistry)
+  static const int _ew7StepZa1 = 11;
+  static const int _ew7StepErrors = 12;
+  static const int _ew7StepCarriageReturn = 13;
+
+  ConnectionBloc(this.repo, this._commandRegistry, this._scaleRegistry,
+      this._profileHolder)
       : super(const ConnectionState.disconnected()) {
     on<ConnectRequested>(_onConnect);
     on<DisconnectRequested>(_onDisconnect);
@@ -50,8 +60,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     on<InitTimeoutExpired>(_onInitTimeoutExpired);
   }
 
+  bool get _isEzi => _profileHolder.current.id == ScaleModelRegistry.eziWeighId;
+
   Future<void> _onConnect(
       ConnectRequested e, Emitter<ConnectionState> emit) async {
+    final descriptor = _scaleRegistry.guessFromDevice(e.device);
+    _profileHolder.update(descriptor);
     emit(ConnectionState.connecting(device: e.device));
     await _sub?.cancel();
     _pollTimer?.cancel();
@@ -77,7 +91,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           add(RawLineArrived('__DISCONNECTED__'));
         });
 
-        emit(ConnectionState.connected(device: e.device));
+        emit(ConnectionState.connected(device: e.device, scale: descriptor));
 
         // 🎯 LIMPIO: Solo inicializar variables de peso
         print('✅ Conexión establecida → Listo para polling de peso');
@@ -102,6 +116,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     _pollTimer = null;
     _weightTimeoutTimer?.cancel();
     _weightCommandInFlight = false;
+    _pendingWeightFragment = null;
 
     // 2. Cancelar suscripción al stream de datos
     if (_sub != null) {
@@ -119,6 +134,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     // 🚀 Resetear estado de polling
     _pollingSuspended = false;
+    _initializationStep = 0;
+    _initTimeoutTimer?.cancel();
 
     // 5. Desconectar del repositorio (esto llamará al BLE adapter)
     print('🔌 Desconectando del dispositivo...');
@@ -137,7 +154,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   void _onRawLine(RawLineArrived e, Emitter<ConnectionState> emit) {
     final s = state;
     if (s is! Connected) return;
-    final line = e.line.trim();
+    // Limpia retornos de carro / saltos de línea para evitar ruido en parsers
+    var line = e.line.replaceAll(RegExp(r'[\r\n]+'), '').trim();
 
     if (line == '__DISCONNECTED__') {
       _weightTimeoutTimer?.cancel();
@@ -146,34 +164,89 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       return;
     }
 
-    print('📥 Línea recibida: "$line" | InitStep: $_initializationStep');
+    if (line.isEmpty) {
+      // Línea solo con retorno de carro: ignorar
+      print('⚠️ Línea vacía tras limpieza CR/LF, se ignora');
+      return;
+    }
+
+    print(
+        '📥 Línea recibida: "$line" | InitStep: $_initializationStep | EZI=${_isEzi}');
+
+    // Unir fragmentos de peso antes de procesar init/peso
+    if (line.startsWith('[') && !line.contains(']')) {
+      _pendingWeightFragment = line;
+      return;
+    }
+    if (_pendingWeightFragment != null && line.contains(']')) {
+      line = (_pendingWeightFragment! + line).replaceAll(RegExp(r'\s+'), '');
+      _pendingWeightFragment = null;
+    } else if (_isEzi && !line.contains(']')) {
+      // EW7 puede enviar fragmentos sin corchetes completos
+      _pendingWeightFragment = _pendingWeightFragment != null
+          ? _pendingWeightFragment! + line
+          : line;
+      return;
+    } else if (_isEzi && _pendingWeightFragment != null && line.contains(']')) {
+      line = (_pendingWeightFragment! + line).replaceAll(RegExp(r'\s+'), '');
+      _pendingWeightFragment = null;
+    }
+
+    final maybeWeightPattern = line.contains('[') && line.contains(']');
 
     // ═══════════════════════════════════════════════════════════
-    // MANEJO DE INICIALIZACIÓN {ZA1} → {MSWU}
+    // MANEJO DE INICIALIZACIÓN {ZA1} → {SPWU} y EW7
     // ═══════════════════════════════════════════════════════════
-    if (_initializationStep == 1) {
+    if (_initializationStep == _ew7StepZa1 && _isEzi) {
+      // EW7: Esperando respuesta de {ZA1}
+      if (line.isNotEmpty) {
+        print('✅ EW7: {ZA1} respondido: $line');
+        _initTimeoutTimer?.cancel();
+        _initializationStep = _ew7StepErrors;
+        print('➡️ EW7: Solicitando errores con {ZE1}...');
+        add(SendCommandRequested(ScaleCommand.getErrors.code));
+        return;
+      }
+    } else if (_initializationStep == _ew7StepErrors && _isEzi) {
+      // EW7: Respuesta de errores {ZE1}
+      print('🧾 EW7: Respuesta {ZE1}: $line');
+      _initTimeoutTimer?.cancel();
+      _initializationStep = _ew7StepCarriageReturn;
+      print('➡️ EW7: Estableciendo retorno de carro {ZC1}...');
+      add(SendCommandRequested(ScaleCommand.setCarriageReturn.code));
+      return;
+    } else if (_initializationStep == _ew7StepCarriageReturn && _isEzi) {
+      // EW7: Esperando confirmación de {ZC1}
+      if (line.isNotEmpty) {
+        print('✅ EW7: {ZC1} confirmado: $line');
+        _initTimeoutTimer?.cancel();
+        _initializationStep = 0;
+        _sendNextWeightCommand();
+        return;
+      }
+    } else if (_initializationStep == 1) {
       // Esperando respuesta de {ZA1}
       // Respuesta típica: "^" (ACK) o similar
       if (line == '^' || line.contains('ACK') || line.isNotEmpty) {
         print('✅ INIT Paso 1: {ZA1} confirmado (ACK: $line)');
         _initTimeoutTimer?.cancel();
         _initializationStep = 2;
-        // Enviar siguiente comando: {MSWU} para consultar unidades
-        print('➡️ INIT Paso 2: Enviando {MSWU}...');
-        add(SendCommandRequested('{MSWU}'));
+        // Enviar siguiente comando: {SPWU} para consultar unidades
+        print('➡️ INIT Paso 2: Enviando {SPWU}...');
+        add(SendCommandRequested('{SPWU}'));
         return;
       }
     } else if (_initializationStep == 2) {
-      // Esperando respuesta de {MSWU}
+      // Esperando respuesta de {SPWU}
       // Respuesta típica: "kg" o "lb" o "^" (ACK de cambio)
       final lower = line.toLowerCase();
-      if (lower.contains('kg') || lower.contains('lb') || line == '^') {
-        print('✅ INIT Paso 2: {MSWU} recibido: $line');
+      if (lower.contains('0') || lower.contains('1') || line == '^') {
+        print('✅ INIT Paso 2: {SPWU} recibido: $line');
         _initTimeoutTimer?.cancel();
         String? unit;
-        if (lower.contains('lb')) {
+        if (lower.contains('1')) {
           unit = 'lb';
-        } else if (lower.contains('kg')) {
+        } else if (lower.contains('0')) {
           unit = 'kg';
         } else if (line == '^') {
           if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
@@ -217,8 +290,13 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     // MODO NORMAL: PROCESAR PESO (solo si NO está en inicialización)
     // ═══════════════════════════════════════════════════════════
     if (_initializationStep != 0) {
-      // Aún en inicialización, ignorar línea
-      return;
+      // Para EW7 permitimos procesar peso aunque la secuencia siga en curso
+      if (!_isEzi ||
+          (!maybeWeightPattern && extractFirstNumber(line) == null)) {
+        return;
+      }
+      _initializationStep = 0;
+      _initTimeoutTimer?.cancel();
     }
 
     // Si el polling está suspendido, no procesar peso
@@ -293,9 +371,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       }
 
       final isInitializationCommand = e.command == '{ZA1}' ||
-          e.command == '{MSWU}' ||
+          e.command == '{SPWU}' ||
           e.command == ScaleCommand.setUnitKg.code ||
-          e.command == ScaleCommand.setUnitLb.code;
+          e.command == ScaleCommand.setUnitLb.code ||
+          e.command == ScaleCommand.getErrors.code ||
+          e.command == ScaleCommand.setCarriageReturn.code;
       final isWeightCommand =
           e.command == ScaleCommand.readWeight.code; // '{RW}'
 
@@ -306,11 +386,18 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
             e.command == ScaleCommand.setUnitLb.code;
 
         if (e.command == '{ZA1}') {
-          _initializationStep = 1; // Esperando respuesta ZA1
-          _startInitTimeout(1);
-        } else if (e.command == '{MSWU}') {
-          _initializationStep = 2; // Esperando respuesta MSWU
+          _initializationStep =
+              _isEzi ? _ew7StepZa1 : 1; // Esperando respuesta ZA1
+          _startInitTimeout(_initializationStep);
+        } else if (e.command == '{SPWU}') {
+          _initializationStep = 2; // Esperando respuesta SPWU
           _startInitTimeout(2);
+        } else if (e.command == ScaleCommand.getErrors.code) {
+          _initializationStep = _ew7StepErrors;
+          _startInitTimeout(_ew7StepErrors);
+        } else if (e.command == ScaleCommand.setCarriageReturn.code) {
+          _initializationStep = _ew7StepCarriageReturn;
+          _startInitTimeout(_ew7StepCarriageReturn);
         } else if (isSetUnitCommand) {
           // 🟢 Cambio de unidad: esperar confirmación ^ (SIN TIMEOUT)
           _initTimeoutTimer?.cancel();
@@ -387,8 +474,16 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     print('🎯 === INICIANDO POLLING CON INICIALIZACIÓN ===');
 
     // Paso 1: Enviar {ZA1} para habilitar confirmación de comandos
+    if (_isEzi) {
+      print(
+          '📤 EW7: Enviando secuencia {ZA1} → {ZE1} → {ZC1} antes de leer peso');
+      _initializationStep = _ew7StepZa1;
+      add(SendCommandRequested(ScaleCommand.enableAcknowledgment.code));
+      return;
+    }
+
     print('📤 Paso 1: Enviando {ZA1} (confirmación de comandos)');
-    add(SendCommandRequested('{ZA1}'));
+    add(SendCommandRequested(ScaleCommand.enableAcknowledgment.code));
   }
 
   void _onInitTimeoutExpired(
@@ -397,11 +492,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (_initializationStep != e.step) return;
 
     if (e.step == 1) {
-      print('⏰ INIT Timeout en ZA1, forzando avance a MSWU');
+      print('⏰ INIT Timeout en ZA1, forzando avance a SPWU');
       _initializationStep = 2;
-      add(SendCommandRequested('{MSWU}'));
+      add(SendCommandRequested('{SPWU}'));
     } else if (e.step == 2) {
-      print('⏰ INIT Timeout en MSWU, infiriendo unidad del último comando');
+      print('⏰ INIT Timeout en SPWU, infiriendo unidad del último comando');
       if (state is Connected) {
         String? unit;
         if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
@@ -413,6 +508,18 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         }
         emit((state as Connected).copyWith(weightUnit: unit));
       }
+      _initializationStep = 0;
+      _sendNextWeightCommand();
+    } else if (e.step == _ew7StepZa1) {
+      print('⏰ EW7: Timeout esperando ZA1, enviando ZE1 igualmente');
+      _initializationStep = _ew7StepErrors;
+      add(SendCommandRequested(ScaleCommand.getErrors.code));
+    } else if (e.step == _ew7StepErrors) {
+      print('⏰ EW7: Timeout esperando ZE1, avanzando a ZC1');
+      _initializationStep = _ew7StepCarriageReturn;
+      add(SendCommandRequested(ScaleCommand.setCarriageReturn.code));
+    } else if (e.step == _ew7StepCarriageReturn) {
+      print('⏰ EW7: Timeout esperando ZC1, iniciando polling de peso');
       _initializationStep = 0;
       _sendNextWeightCommand();
     }
@@ -443,7 +550,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       final isConnected = await repo.isConnected();
 
       if (isConnected) {
-        emit(ConnectionState.connected(device: e.device));
+        final descriptor = _scaleRegistry.guessFromDevice(e.device);
+        _profileHolder.update(descriptor);
+        emit(ConnectionState.connected(device: e.device, scale: descriptor));
 
         _sub = repo.rawStream().listen((line) {
           add(RawLineArrived(line));
@@ -481,7 +590,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
             name: 'S3 (Conectado)');
 
         // Emitir estado conectado
-        emit(ConnectionState.connected(device: s3Device));
+        _profileHolder.update(ScaleModelRegistry.truTestS3);
+        emit(ConnectionState.connected(
+            device: s3Device, scale: ScaleModelRegistry.truTestS3));
 
         // Configurar escucha de datos
         _sub = repo.rawStream().listen((line) {
@@ -540,6 +651,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   void _completeWeightCommandCycle() {
     _weightTimeoutTimer?.cancel();
     _weightCommandInFlight = false;
+    _pendingWeightFragment = null;
     if (_pollingSuspended) return;
     Future.delayed(_trackingGap, _sendNextWeightCommand);
   }

@@ -173,7 +173,8 @@ class _HomePageState extends State<HomePage> {
               }
             },
             builder: (context, connState) {
-              final connected = connState is conn.Connected;
+              final connectedState =
+                  connState is conn.Connected ? connState : null;
               final connecting = connState is conn.Connecting;
 
               return Padding(
@@ -182,11 +183,11 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     // === Tarjeta de lectura de peso o mensaje vacío ===
                     // El estado "connecting" ahora se muestra como un Dialog modal centrado
-                    if (connected)
+                    if (connectedState != null)
                       WeightCard(
-                        weight: connState.weight,
-                        batteryVoltage: connState.batteryVoltage,
-                        batteryPercent: connState.batteryPercent,
+                        weight: connectedState.weight,
+                        batteryVoltage: connectedState.batteryVoltage,
+                        batteryPercent: connectedState.batteryPercent,
                       )
                     else if (!connecting)
                       Card(
@@ -214,11 +215,13 @@ class _HomePageState extends State<HomePage> {
 
                     // === Lista de dispositivos vinculados/emparejados únicamente ===
                     // === Botones de acción horizontal: GUARDAR PESAJE ===
-                    if (connected)
+                    if (connectedState != null)
                       BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
                         builder: (context, connState) {
-                          final isStable = connState is conn.Connected &&
-                              connState.weight?.status == WeightStatus.stable;
+                          final current =
+                              connState is conn.Connected ? connState : null;
+                          final isStable =
+                              current?.weight?.status == WeightStatus.stable;
 
                           return Row(
                             children: [
@@ -226,7 +229,8 @@ class _HomePageState extends State<HomePage> {
                               Expanded(
                                 child: FilledButton.icon(
                                   onPressed: isStable
-                                      ? () => _saveWeighing(context, connState)
+                                      ? () => _saveWeighing(
+                                          context, current ?? connectedState)
                                       : null,
                                   style: FilledButton.styleFrom(
                                     backgroundColor:
@@ -250,7 +254,7 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 16),
 
                     // === Últimos 5 pesajes ===
-                    if (connected)
+                    if (connectedState != null)
                       BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
                         buildWhen: (previous, current) {
                           // Solo reconstruir cuando cambie el dispositivo conectado
@@ -312,7 +316,7 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 16),
 
                     // === Lista de dispositivos vinculados/emparejados únicamente ===
-                    if (!connected && !connecting) ...[
+                    if (connectedState == null && !connecting) ...[
                       Row(
                         children: [
                           Text(
