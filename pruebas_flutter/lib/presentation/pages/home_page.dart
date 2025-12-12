@@ -1,12 +1,24 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../core/bluetooth_debug.dart';
 import '../../domain/entities.dart';
+import '../../data/local/database_service.dart';
+import '../../core/database_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
 import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
+import '../widgets/scan_devices_dialog.dart';
+import '../widgets/sqlite_widgets.dart';
+import 'device_info_page.dart';
+import 'configuration_page.dart';
+import 'weighing_history_page.dart';
+import 'bunch_table_page.dart';
+// import '../widgets/device_info_loader.dart'; // Reemplazado por DeviceInfoPage
+// import '../widgets/device_info_card.dart'; // Reemplazado por DeviceInfoLoader
+// import '../widgets/scale_status_icon.dart'; // DESACTIVADO
+// import '../widgets/device_info_widget.dart'; // Reemplazado por DeviceInfoCard
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,6 +28,23 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  // Controla si el diálogo de "Conectando" está abierto
+  bool _connectingDialogOpen = false;
+
+  // Catálogos para el guardado de pesajes
+  List<Cuadrilla> _cuadrillas = [];
+  List<Operario> _operarios = [];
+  int? _selectedCuadrillaId;
+  int? _selectedOperarioId;
+  int? _selectedBasculaId;
+  DatabaseService? _databaseService;
+
+  // Control para evitar mostrar múltiples veces el diálogo de báscula no registrada
+  bool _basculaDialogShown = false;
+
+  // Control para evitar buscar báscula múltiples veces por el mismo dispositivo
+  String? _lastDeviceMacSearched;
+
   @override
   void initState() {
     super.initState();
@@ -31,298 +60,845 @@ class _HomePageState extends State<HomePage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme;
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _databaseService ??= DatabaseProvider.of(context);
+    // Cargar/recargar catálogos cuando DatabaseService esté disponible
+    if (_databaseService != null) {
+      _loadCatalogs();
+    }
+  }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Básculas – Monitor'),
+  Future<void> _loadCatalogs() async {
+    final db = _databaseService;
+    if (db == null) return;
+    try {
+      final cuadrillaRows = await db.getCuadrillas();
+      final operarioRows = await db.getOperarios();
+      setState(() {
+        _cuadrillas = cuadrillaRows.map((r) => Cuadrilla.fromMap(r)).toList()
+          ..sort((a, b) => a.nombre.compareTo(b.nombre));
+        _operarios = operarioRows.map((r) => Operario.fromMap(r)).toList()
+          ..sort((a, b) => a.nombreCompleto.compareTo(b.nombreCompleto));
+
+        // Validar que la cuadrilla seleccionada siga existiendo
+        if (_selectedCuadrillaId != null &&
+            !_cuadrillas.any((c) => c.idCuadrilla == _selectedCuadrillaId)) {
+          _selectedCuadrillaId = null;
+          _selectedOperarioId = null;
+        }
+
+        // Validar que el operario seleccionado siga existiendo
+        if (_selectedOperarioId != null &&
+            !_operarios.any((o) => o.idOperario == _selectedOperarioId)) {
+          _selectedOperarioId = null;
+        }
+
+        // Auto-seleccionar primera cuadrilla si no hay ninguna seleccionada
+        if (_cuadrillas.isNotEmpty && _selectedCuadrillaId == null) {
+          _selectedCuadrillaId = _cuadrillas.first.idCuadrilla;
+          _filterOperarios();
+        }
+        // NO auto-seleccionar báscula - solo se selecciona cuando se conecta por MAC
+      });
+    } catch (e) {
+      print('Error cargando catálogos: $e');
+    }
+  }
+
+  void _filterOperarios() {
+    // Solo mostrar operarios de la cuadrilla seleccionada
+    if (_selectedCuadrillaId == null) {
+      setState(() => _selectedOperarioId = null);
+      return;
+    }
+    final filtered =
+        _operarios.where((o) => o.idCuadrilla == _selectedCuadrillaId).toList();
+    setState(() {
+      _selectedOperarioId =
+          filtered.isNotEmpty ? filtered.first.idOperario : null;
+    });
+  }
+
+  /// Auto-seleccionar báscula basada en la MAC del dispositivo conectado
+  Future<void> _autoSelectBasculaByMac(
+      BuildContext context, conn.Connected state) async {
+    final db = _databaseService;
+    if (db == null) return;
+
+    try {
+      // Obtener la MAC del dispositivo conectado
+      final deviceMac = state.device.id;
+      if (deviceMac.isEmpty) {
+        print('⚠️  No hay MAC de dispositivo disponible');
+        return;
+      }
+
+      // Evitar buscar el mismo dispositivo múltiples veces
+      if (_lastDeviceMacSearched == deviceMac) {
+        print('ℹ️  Ya se buscó esta báscula anteriormente');
+        return;
+      }
+
+      _lastDeviceMacSearched = deviceMac;
+      print('🔍 Buscando báscula con MAC: $deviceMac');
+
+      // Buscar la báscula en la BD
+      final bascula = await db.getBasculaByMac(deviceMac);
+
+      if (bascula != null) {
+        // Báscula encontrada - auto-seleccionar
+        print('✅ Báscula encontrada: ${bascula.nombre}');
+        setState(() {
+          _selectedBasculaId = bascula.idBascula;
+          _basculaDialogShown = false; // Resetear el flag
+        });
+      } else {
+        // Báscula NO encontrada - NO auto-seleccionar
+        print('❌ Báscula NO registrada con MAC: $deviceMac');
+        // No mostrar mensaje aquí, dejamos que aparezca cuando intente guardar
+      }
+    } catch (e) {
+      print('Error auto-seleccionando báscula: $e');
+    }
+  }
+
+  /// Mostrar diálogo de advertencia cuando la báscula no está registrada
+  void _showBasculaNotRegisteredDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        icon: const Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.orange,
+          size: 64,
+        ),
+        title: const Text(
+          'Báscula No Registrada',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'La báscula conectada no está registrada en el sistema.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'MAC: ${context.read<conn.ConnectionBloc>().state is conn.Connected ? (context.read<conn.ConnectionBloc>().state as conn.Connected).device.id : "Desconocido"}',
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Por favor, registre la báscula en la sección de Configuración antes de poder guardar pesajes.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
         actions: [
-          IconButton(
-            tooltip: 'Buscar dispositivos',
-            onPressed: () => context.read<ScanCubit>().scanUnified(),
-            icon: const Icon(Icons.search),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('CANCELAR'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const ConfigurationPage(),
+                ),
+              );
+            },
+            icon: const Icon(Icons.settings),
+            label: const Text('IR A CONFIGURACIÓN'),
           ),
         ],
       ),
-      body: SafeArea(
-        child: BlocConsumer<conn.ConnectionBloc, conn.ConnectionState>(
-          listener: (context, state) {
-            if (state is conn.ConnectionError) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(state.message)));
-            }
+    );
+  }
 
-            // Detener escaneo cuando se conecta exitosamente
-            if (state is conn.Connected) {
-              context.read<ScanCubit>().stopScanning();
-              print('🛑 Escaneo detenido - dispositivo conectado');
-            }
-          },
-          builder: (context, connState) {
-            final connected = connState is conn.Connected;
-            final connecting = connState is conn.Connecting;
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme;
 
-            return Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                children: [
-                  // === Tarjeta de lectura de peso, estado de conexión o mensaje vacío ===
-                  if (connected)
-                    WeightCard(
-                      weight: connState.weight,
-                      batteryVoltage: connState.batteryVoltage,
-                      batteryPercent: connState.batteryPercent,
-                    )
-                  else if (connecting)
-                    Card(
-                      color: color.surfaceContainer,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          children: [
-                            const CircularProgressIndicator(),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Conectando...',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Estableciendo conexión con ${connState.device.name}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodyMedium
-                                  ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
+    return BlocListener<conn.ConnectionBloc, conn.ConnectionState>(
+      listener: (context, state) {
+        // Mostrar dialog de conexión cuando está conectando
+        if (state is conn.Connecting) {
+          // Evitar abrir múltiples veces
+          if (!_connectingDialogOpen) {
+            _connectingDialogOpen = true;
+          }
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => _buildConnectingDialog(state),
+          );
+        } else if (state is conn.Connected) {
+          // Cerrar el diálogo si estaba abierto
+          if (_connectingDialogOpen) {
+            _connectingDialogOpen = false;
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+          // Auto-seleccionar báscula basada en la MAC conectada
+          _autoSelectBasculaByMac(context, state);
+        } else {
+          // Cerrar el diálogo sólo si lo abrimos desde esta pantalla
+          if (_connectingDialogOpen) {
+            _connectingDialogOpen = false;
+            // Usar rootNavigator para asegurarnos de cerrar el diálogo modal
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Básculas – Monitor'),
+          actions: [
+            // 🎯 Icono de estado de la báscula - DESACTIVADO
+            /* BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+            builder: (context, connectionState) {
+              return Padding(
+                padding: const EdgeInsets.only(right: 8.0),
+                child: ScaleStatusIcon(
+                  isConnected: connectionState is conn.Connected,
+                  weight: connectionState is conn.Connected
+                      ? connectionState.weight
+                      : null,
+                  batteryVoltage: connectionState is conn.Connected
+                      ? connectionState.batteryVoltage
+                      : null,
+                  batteryPercent: connectionState is conn.Connected
+                      ? connectionState.batteryPercent
+                      : null,
+                  onTap: () {
+                    // Mostrar detalles rápidos o ir a pantalla de detalles
+                    if (connectionState is conn.Connected) {
+                      _showScaleDetails(context, connectionState);
+                    }
+                  },
+                ),
+              );
+            },
+          ), */
+            // Ícono de historial de pesajes
+            IconButton(
+              tooltip: 'Historial de Pesajes',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const WeighingHistoryPage(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.history),
+            ),
+            // Tabla diaria de racimos
+            IconButton(
+              tooltip: 'Tabla de Racimos',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const BunchTablePage(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.table_chart),
+            ),
+            BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+              builder: (context, connectionState) {
+                if (connectionState is conn.Connected) {
+                  return IconButton(
+                    tooltip: 'Acerca del dispositivo',
+                    onPressed: () => _showDeviceInfo(context, connectionState),
+                    icon: const Icon(Icons.info_outline),
+                  );
+                }
+                return const SizedBox
+                    .shrink(); // No mostrar si no está conectado
+              },
+            ),
+            // ⚙️ Icono de configuración
+            BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+              builder: (context, connectionState) {
+                if (connectionState is conn.Connected) {
+                  return IconButton(
+                    tooltip: 'Configuración',
+                    onPressed: () =>
+                        _showConfiguration(context, connectionState),
+                    icon: const Icon(Icons.settings),
+                  );
+                }
+                return const SizedBox
+                    .shrink(); // No mostrar si no está conectado
+              },
+            ),
+            IconButton(
+              tooltip: 'Buscar dispositivos',
+              onPressed: () => _showScanDialog(),
+              icon: const Icon(Icons.search),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: BlocConsumer<conn.ConnectionBloc, conn.ConnectionState>(
+            listener: (context, state) {
+              if (state is conn.ConnectionError) {
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(state.message)));
+              }
+
+              // Detener escaneo cuando se conecta exitosamente
+              if (state is conn.Connected) {
+                context.read<ScanCubit>().stopScanning();
+                print('🛑 Escaneo detenido - dispositivo conectado');
+              }
+            },
+            builder: (context, connState) {
+              final connectedState =
+                  connState is conn.Connected ? connState : null;
+              final connecting = connState is conn.Connecting;
+
+              return Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    // === Tarjeta de lectura de peso o mensaje vacío ===
+                    // El estado "connecting" ahora se muestra como un Dialog modal centrado
+                    if (connectedState != null)
+                      WeightCard(
+                        weight: connectedState.weight,
+                        batteryVoltage: connectedState.batteryVoltage,
+                        batteryPercent: connectedState.batteryPercent,
+                      )
+                    else if (!connecting)
+                      Card(
+                        color: color.surfaceContainerHigh,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              Icon(Icons.info_outline),
+                              SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'No hay dispositivo conectado. Selecciona uno para iniciar.',
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                    )
-                  else
-                    Card(
-                      color: color.surfaceContainerHigh,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Padding(
-                        padding: EdgeInsets.all(16),
+
+                    const SizedBox(height: 16),
+
+                    // === Dropdowns de Cuadrilla, Operario y Bascula (Fila Horizontal) ===
+                    if (connectedState != null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
                         child: Row(
                           children: [
-                            Icon(Icons.info_outline),
-                            SizedBox(width: 12),
                             Expanded(
-                              child: Text(
-                                'No hay dispositivo conectado. Selecciona uno para iniciar.',
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.grey.shade400,
+                                    width: 1,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: DropdownButton<int>(
+                                  isExpanded: true,
+                                  isDense: false,
+                                  elevation: 8,
+                                  underline: const SizedBox(),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  hint: const Text('Cuadrilla'),
+                                  value: _selectedCuadrillaId,
+                                  dropdownColor: Colors.white,
+                                  items: _cuadrillas
+                                      .map((c) => DropdownMenuItem(
+                                            value: c.idCuadrilla,
+                                            child: Text(c.nombre),
+                                          ))
+                                      .toList(),
+                                  onChanged: (id) {
+                                    if (id != null) {
+                                      setState(() {
+                                        _selectedCuadrillaId = id;
+                                        _filterOperarios();
+                                      });
+                                    }
+                                  },
+                                ),
                               ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.grey.shade400,
+                                    width: 1,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: DropdownButton<int>(
+                                  isExpanded: true,
+                                  isDense: false,
+                                  elevation: 8,
+                                  underline: const SizedBox(),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  hint: const Text('Operario'),
+                                  value: _selectedOperarioId,
+                                  dropdownColor: Colors.white,
+                                  items: _selectedCuadrillaId == null
+                                      ? []
+                                      : _operarios
+                                          .where((o) =>
+                                              o.idCuadrilla ==
+                                              _selectedCuadrillaId)
+                                          .map((o) => DropdownMenuItem(
+                                                value: o.idOperario,
+                                                child: Text(o.nombreCompleto),
+                                              ))
+                                          .toList(),
+                                  onChanged: (id) {
+                                    if (id != null) {
+                                      setState(() => _selectedOperarioId = id);
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            IconButton(
+                              tooltip: 'Actualizar catálogos',
+                              onPressed: _loadCatalogs,
+                              icon: const Icon(Icons.refresh),
                             ),
                           ],
                         ),
                       ),
-                    ),
 
-                  const SizedBox(height: 16),
+                    const SizedBox(height: 16),
 
-                  // === Lista de dispositivos disponibles (solo si NO está conectado ni conectando) ===
-                  if (!connected && !connecting) ...[
-                    Row(
-                      children: [
-                        Text(
-                          'Dispositivos Disponibles',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        TextButton.icon(
-                          onPressed: () => _checkManualConnection(),
-                          icon: const Icon(Icons.bluetooth_connected, size: 16),
-                          label: const Text('Verificar Manual'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
-                          onPressed: () => _runDiagnostic(),
-                          icon: const Icon(Icons.bug_report, size: 16),
-                          label: const Text('Diagnóstico'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          onPressed: () =>
-                              context.read<ScanCubit>().loadBonded(),
-                          child: const Text('Actualizar'),
-                        ),
-                      ],
-                    ),
-                    Expanded(
-                      child: BlocBuilder<ScanCubit, ScanState>(
-                        builder: (context, scanState) {
-                          print('🎨 === UI REBUILD DISPOSITIVOS ===');
-                          print(
-                              '📊 Dispositivos vinculados: ${scanState.bonded.length}');
-                          print(
-                              '📊 Dispositivos encontrados: ${scanState.found.length}');
-                          print('🔄 Loading: ${scanState.loading}');
-                          print('❌ Error: ${scanState.error}');
+                    // === Botones de acción horizontal: GUARDAR PESAJE ===
+                    if (connectedState != null)
+                      BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+                        builder: (context, connState) {
+                          final current =
+                              connState is conn.Connected ? connState : null;
+                          final isStable =
+                              current?.weight?.status == WeightStatus.stable;
+                          final canSave = isStable &&
+                              _selectedCuadrillaId != null &&
+                              _selectedOperarioId != null;
 
-                          final items = <Widget>[];
-                          final deviceIds = <String>{};
-
-                          // Mostrar tanto dispositivos vinculados como encontrados
-                          // Primero dispositivos vinculados
-                          for (final d in scanState.bonded) {
-                            if (!deviceIds.contains(d.id)) {
-                              print(
-                                  '🎨 Agregando vinculado: ${d.name} (${d.id})');
-                              items.add(
-                                DeviceTile(
-                                  device: d,
-                                  onTap: () => _connect(d),
-                                ),
-                              );
-                              items.add(const Divider(height: 1));
-                              deviceIds.add(d.id);
-                            }
-                          }
-
-                          // Luego dispositivos encontrados
-                          for (final d in scanState.found) {
-                            if (!deviceIds.contains(d.id)) {
-                              print(
-                                  '🎨 Agregando encontrado: ${d.name} (${d.id})');
-                              items.add(
-                                DeviceTile(
-                                  device: d,
-                                  onTap: () => _connect(d),
-                                ),
-                              );
-                              items.add(const Divider(height: 1));
-                              deviceIds.add(d.id);
-                            }
-                          }
-
-                          if (items.isEmpty) {
-                            print('⚠️ UI: Lista vacía, mostrando mensaje');
-                            items.add(
-                              ListTile(
-                                title: Text(
-                                  'No hay dispositivos disponibles. Usa el botón de búsqueda para encontrar básculas.',
+                          return Row(
+                            children: [
+                              // 💾 Botón GUARDAR PESAJE
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: canSave
+                                      ? () => _saveWeighing(
+                                          context, current ?? connectedState)
+                                      : null,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor:
+                                        canSave ? Colors.blue : Colors.grey,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 16),
+                                  ),
+                                  icon: const Icon(Icons.save, size: 20),
+                                  label: Text(
+                                    !isStable
+                                        ? 'Esperando...'
+                                        : _selectedCuadrillaId == null
+                                            ? 'Selecciona cuadrilla'
+                                            : _selectedOperarioId == null
+                                                ? 'Selecciona operario'
+                                                : _selectedBasculaId == null
+                                                    ? 'Báscula no registrada'
+                                                    : 'GUARDAR',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
                                 ),
                               ),
-                            );
-                          } else {
-                            print(
-                                '✅ UI: Mostrando ${items.length ~/ 2} dispositivos');
-                          }
-
-                          return ListView(children: items);
+                            ],
+                          );
                         },
                       ),
-                    ),
-                    const SizedBox(height: 8),
 
-                    // === Lista de dispositivos cercanos ===
-                    Row(
-                      children: [
-                        Text(
-                          'Dispositivos Cercanos',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        BlocBuilder<ScanCubit, ScanState>(
-                          builder: (_, s) => s.scanning
-                              ? Row(
-                                  mainAxisSize: MainAxisSize.min,
+                    const SizedBox(height: 16),
+
+                    // === Últimos 5 pesajes ===
+                    if (connectedState != null)
+                      BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
+                        buildWhen: (previous, current) {
+                          // Solo reconstruir cuando cambie el dispositivo conectado
+                          // No reconstruir en cada actualización de peso
+                          if (previous is conn.Connected &&
+                              current is conn.Connected) {
+                            return previous.device.id != current.device.id;
+                          }
+                          return previous.runtimeType != current.runtimeType;
+                        },
+                        builder: (context, connState) {
+                          if (connState is! conn.Connected) {
+                            return const SizedBox.shrink();
+                          }
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 8),
+                                child: Row(
                                   children: [
-                                    SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2),
-                                    ),
+                                    const Icon(Icons.history, size: 20),
                                     const SizedBox(width: 8),
-                                    const Text('Escaneando dispositivos...'),
+                                    Text(
+                                      'Últimos pesajes',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                    const Spacer(),
+                                    TextButton(
+                                      onPressed: () {
+                                        Navigator.of(context).push(
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const WeighingHistoryPage(),
+                                          ),
+                                        );
+                                      },
+                                      child: const Text('Ver todos'),
+                                    ),
                                   ],
-                                )
-                              : const SizedBox.shrink(),
-                        ),
-                      ],
-                    ),
-                    SizedBox(
-                      height: 170,
-                      child: BlocBuilder<ScanCubit, ScanState>(
-                        builder: (context, scanState) {
-                          final items = <Widget>[];
-                          for (final d in scanState.found) {
-                            items.add(
-                              DeviceTile(
-                                device: d,
-                                onTap: () => _connect(d),
+                                ),
                               ),
-                            );
-                            items.add(const Divider(height: 1));
-                          }
-                          return ListView(children: items);
+                              const SizedBox(height: 8),
+                              SizedBox(
+                                height: 280,
+                                child: BunchHistoryWidget(
+                                  limit: 5,
+                                ),
+                              ),
+                            ],
+                          );
                         },
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
 
-                  // === Botón de control ===
-                  FilledButton.tonalIcon(
-                    onPressed: (connected || connecting)
-                        ? () => context
-                            .read<conn.ConnectionBloc>()
-                            .add(conn.DisconnectRequested())
-                        : null,
-                    icon: const Icon(Icons.link_off, size: 18),
-                    label: Text(connecting ? 'Cancelar' : 'Desconectar'),
+                    const SizedBox(height: 16),
+
+                    // === Lista de dispositivos vinculados/emparejados únicamente ===
+                    if (connectedState == null && !connecting) ...[
+                      Row(
+                        children: [
+                          Text(
+                            'Dispositivos Emparejados',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const Spacer(),
+                          // Botón principal de actualizar
+                          TextButton.icon(
+                            onPressed: () =>
+                                context.read<ScanCubit>().loadBonded(),
+                            icon: const Icon(Icons.refresh, size: 16),
+                            label: const Text('Actualizar'),
+                          ),
+                          // Menú desplegable para acciones adicionales
+                          PopupMenuButton<String>(
+                            onSelected: (value) {
+                              switch (value) {
+                                case 'manual':
+                                  _checkManualConnection();
+                                  break;
+                                case 'diagnostic':
+                                  _runDiagnostic();
+                                  break;
+                              }
+                            },
+                            itemBuilder: (context) => [
+                              const PopupMenuItem(
+                                value: 'manual',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.bluetooth_connected, size: 16),
+                                    SizedBox(width: 8),
+                                    Text('Verificar Manual'),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'diagnostic',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.bug_report, size: 16),
+                                    SizedBox(width: 8),
+                                    Text('Diagnóstico'),
+                                  ],
+                                ),
+                              ),
+                            ],
+                            child: const Padding(
+                              padding: EdgeInsets.all(8.0),
+                              child: Icon(Icons.more_vert),
+                            ),
+                          ),
+                        ],
+                      ),
+                      Expanded(
+                        child: BlocBuilder<ScanCubit, ScanState>(
+                          builder: (context, scanState) {
+                            print(
+                                '🎨 === UI REBUILD DISPOSITIVOS EMPAREJADOS ===');
+                            print(
+                                '📊 Dispositivos vinculados: ${scanState.bonded.length}');
+
+                            final items = <Widget>[];
+
+                            // Mostrar SOLO dispositivos vinculados/emparejados
+                            for (final d in scanState.bonded) {
+                              print(
+                                  '🎨 Agregando emparejado: ${d.name} (${d.id})');
+                              items.add(
+                                DeviceTile(
+                                  device: d,
+                                  onTap: () => _connect(d),
+                                ),
+                              );
+                              items.add(const Divider(height: 1));
+                            }
+
+                            if (items.isEmpty) {
+                              print('⚠️ UI: Lista vacía, mostrando mensaje');
+                              items.add(
+                                Card(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
+                                      children: [
+                                        Icon(
+                                          Icons.bluetooth_disabled,
+                                          size: 48,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .outline,
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Text(
+                                          'No hay dispositivos emparejados',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .outline,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'Usa el botón de búsqueda para encontrar nuevos dispositivos',
+                                          textAlign: TextAlign.center,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                color: Theme.of(context)
+                                                    .colorScheme
+                                                    .outline,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 16),
+                                        FilledButton.icon(
+                                          onPressed: () => _showScanDialog(),
+                                          icon: const Icon(Icons.search,
+                                              size: 18),
+                                          label:
+                                              const Text('Buscar Dispositivos'),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            } else {
+                              print(
+                                  '✅ UI: Mostrando ${items.length ~/ 2} dispositivos emparejados');
+                            }
+
+                            return ListView(children: items);
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 🔄 Widget para mostrar el dialog de conexión centrado
+  Widget _buildConnectingDialog(conn.Connecting state) {
+    return Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+      ),
+      elevation: 8,
+      child: Container(
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Theme.of(context).colorScheme.primaryContainer,
+              Theme.of(context).colorScheme.secondaryContainer,
+            ],
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Icono animado de Bluetooth
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.bluetooth_searching,
+                size: 64,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Indicador de progreso
+            SizedBox(
+              width: 48,
+              height: 48,
+              child: CircularProgressIndicator(
+                strokeWidth: 4,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Título
+            Text(
+              'Conectando',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+            ),
+            const SizedBox(height: 12),
+
+            // Nombre del dispositivo
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.scale,
+                    size: 20,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      state.device.name,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
-            );
-          },
+            ),
+            const SizedBox(height: 16),
+
+            // Mensaje descriptivo
+            Text(
+              'Estableciendo conexión Bluetooth...',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Por favor espera un momento',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurfaceVariant
+                        .withOpacity(0.7),
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ),
       ),
     );
   }
 
   void _runDiagnostic() async {
-    print('🔍 === EJECUTANDO DIAGNÓSTICO DESDE UI ===');
-
-    // Mostrar indicador de progreso
+    print('🔍 === DIAGNÓSTICO BLUETOOTH ===');
+    // Funcionalidad de diagnóstico deshabilitada temporalmente
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text(
-            '🔍 Ejecutando diagnóstico Bluetooth... Revisa la consola para detalles.'),
-        duration: Duration(seconds: 3),
+        content: Text('⚠️ Diagnóstico no disponible en esta versión'),
+        duration: Duration(seconds: 2),
       ),
     );
-
-    // Ejecutar diagnóstico en background
-    await BluetoothDebug.runFullDiagnostic();
-
-    // Mostrar resultado
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              '✅ Diagnóstico completado. Revisa la consola para los resultados.'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-    }
   }
 
   void _connect(BtDevice d) {
@@ -366,5 +942,217 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     }
+  }
+
+  /// 📊 Mostrar detalles rápidos de la báscula - DESACTIVADO
+  /* void _showScaleDetails(BuildContext context, conn.Connected state) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.scale, color: Colors.green),
+            const SizedBox(width: 8),
+            Text('${state.device.name}'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 📊 Información del peso
+            if (state.weight != null) ...[
+              _buildDetailRow(
+                icon: Icons.monitor_weight,
+                label: 'Peso',
+                value: '${state.weight!.kg?.toStringAsFixed(1) ?? 'N/A'} kg',
+                status: state.weight!.status,
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // 🔋 Información de batería
+            if (state.batteryPercent != null) ...[
+              _buildDetailRow(
+                icon: Icons.battery_full,
+                label: 'Batería',
+                value:
+                    '${state.batteryPercent!.percent?.toStringAsFixed(0) ?? 'N/A'}%',
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            if (state.batteryVoltage != null) ...[
+              _buildDetailRow(
+                icon: Icons.electrical_services,
+                label: 'Voltaje',
+                value:
+                    '${state.batteryVoltage!.volts?.toStringAsFixed(2) ?? 'N/A'} V',
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // 📱 Información de conexión
+            _buildDetailRow(
+              icon: Icons.bluetooth_connected,
+              label: 'Estado',
+              value: 'Conectado',
+              status: WeightStatus.stable,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 📋 Construir fila de detalle
+  Widget _buildDetailRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    WeightStatus? status,
+  }) {
+    Color statusColor = Colors.green;
+    if (status != null) {
+      switch (status) {
+        case WeightStatus.stable:
+          statusColor = Colors.green;
+          break;
+        case WeightStatus.unstable:
+          statusColor = Colors.orange;
+          break;
+        case WeightStatus.negative:
+          statusColor = Colors.red;
+          break;
+      }
+    }
+
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: statusColor),
+        const SizedBox(width: 8),
+        Text(
+          '$label:',
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const Spacer(),
+        Text(
+          value,
+          style: TextStyle(
+            color: statusColor,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  } */
+
+  /// 💾 Guardar pesaje en Firebase (optimizado - sin bloqueo)
+  void _saveWeighing(BuildContext context, conn.Connected state) {
+    final weight = state.weight;
+    final weightKg = weight?.kg;
+    final cuadrillaId = _selectedCuadrillaId;
+    final operarioId = _selectedOperarioId;
+    final basculaId = _selectedBasculaId;
+
+    if (weightKg == null || cuadrillaId == null || operarioId == null) return;
+
+    // Verificar que la báscula esté registrada
+    if (basculaId == null) {
+      if (!_basculaDialogShown) {
+        _basculaDialogShown = true;
+        _showBasculaNotRegisteredDialog(context);
+      }
+      return;
+    }
+
+    // Reiniciar el flag cuando se guarde correctamente
+    _basculaDialogShown = false;
+
+    // ✅ Mostrar confirmación INMEDIATA
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '✅ Guardando: ${weightKg.toStringAsFixed(2)} kg',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+
+    // 🔄 Guardar en background sin bloquear la UI
+    unawaited(
+      Future.microtask(() async {
+        try {
+          final databaseService = DatabaseProvider.of(context);
+
+          // Guardar en SQLite (esquema normalizado)
+          final localId = await databaseService.insertPesaje(
+            idCuadrilla: cuadrillaId,
+            idOperario: operarioId,
+            idBascula: basculaId,
+            peso: weightKg,
+            fechaHora: DateTime.now(),
+          );
+
+          print('✅ Pesaje guardado localmente (ID: $localId)');
+        } catch (e) {
+          print('❌ Error guardando pesaje: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('❌ Error al guardar: $e'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      }),
+    );
+  }
+
+  /// 📋 Navegar a la página de información del dispositivo
+  void _showDeviceInfo(BuildContext context, conn.Connected state) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => DeviceInfoPage(basculaId: _selectedBasculaId),
+      ),
+    );
+  }
+
+  /// ⚙️ Navegar a la página de configuración
+  void _showConfiguration(BuildContext context, conn.Connected state) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => const ConfigurationPage(),
+      ),
+    );
+  }
+
+  void _showScanDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // No se puede cerrar tocando fuera
+      builder: (context) => ScanDevicesDialog(
+        onDeviceSelected: (device) => _connect(device),
+      ),
+    );
   }
 }

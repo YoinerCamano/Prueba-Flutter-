@@ -3,13 +3,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'core/database_provider.dart';
 import 'data/bluetooth_repository_spp.dart';
 import 'data/ble/ble_adapter.dart';
 import 'data/ble/bluetooth_repository_ble.dart';
 import 'data/datasources/command_registry.dart';
+import 'data/datasources/scale_model_registry.dart';
+import 'data/datasources/scale_profile_holder.dart';
+import 'data/local/database_service.dart';
 import 'domain/bluetooth_repository.dart';
 import 'presentation/blocs/connection/connection_bloc.dart';
 import 'presentation/blocs/scan/scan_cubit.dart';
+import 'presentation/blocs/device_info/device_info_bloc.dart';
 import 'presentation/pages/home_page.dart';
 import 'domain/entities.dart';
 
@@ -74,40 +79,73 @@ Future<void> _ensurePermissions() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   await _ensurePermissions();
 
+  final scaleModelRegistry = ScaleModelRegistry();
+  final scaleProfileHolder = ScaleProfileHolder(ScaleModelRegistry.unknown);
   final BluetoothRepository sppRepo =
       BluetoothRepositorySpp(BluetoothAdapterSpp());
   final BluetoothRepository bleRepo = BluetoothRepositoryBle(BleAdapter(
-      config: BleUartConfig.truTest())); // Configuración específica para S3
+      config: BleUartConfig.truTest())); // Configuraci?n espec?fica para S3
+  final commandRegistry = CommandRegistry();
+  final bridgeRepo = _BridgeRepository(
+      sppRepo, bleRepo, scaleModelRegistry, scaleProfileHolder);
 
-  runApp(MyApp(sppRepo: sppRepo, bleRepo: bleRepo));
+  runApp(MyApp(
+    sppRepo: sppRepo,
+    bleRepo: bleRepo,
+    scaleModelRegistry: scaleModelRegistry,
+    scaleProfileHolder: scaleProfileHolder,
+    commandRegistry: commandRegistry,
+    bridgeRepo: bridgeRepo,
+  ));
 }
 
 class MyApp extends StatelessWidget {
   final BluetoothRepository sppRepo;
   final BluetoothRepository bleRepo;
-  const MyApp({super.key, required this.sppRepo, required this.bleRepo});
+  final ScaleModelRegistry scaleModelRegistry;
+  final ScaleProfileHolder scaleProfileHolder;
+  final CommandRegistry commandRegistry;
+  final BluetoothRepository bridgeRepo;
+  const MyApp(
+      {super.key,
+      required this.sppRepo,
+      required this.bleRepo,
+      required this.scaleModelRegistry,
+      required this.scaleProfileHolder,
+      required this.commandRegistry,
+      required this.bridgeRepo});
 
   @override
   Widget build(BuildContext context) {
     final scheme = ColorScheme.fromSeed(
         seedColor: const Color(0xFF1463FF), brightness: Brightness.light);
-    return MultiBlocProvider(
-      providers: [
-        BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
-        BlocProvider(
-            create: (_) => ConnectionBloc(
-                _BridgeRepository(sppRepo, bleRepo), CommandRegistry())),
-      ],
-      child: MaterialApp(
-        title: 'Pruebas Flutter',
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: scheme,
-          textTheme: GoogleFonts.interTextTheme(),
+
+    // Crear instancia de base de datos local (SQLite)
+    final databaseService = DatabaseService();
+
+    return DatabaseProvider(
+      databaseService: databaseService,
+      child: MultiBlocProvider(
+        providers: [
+          BlocProvider(create: (_) => ScanCubit(sppRepo, bleRepo)),
+          BlocProvider(
+              create: (_) => ConnectionBloc(bridgeRepo, commandRegistry,
+                  scaleModelRegistry, scaleProfileHolder)),
+          BlocProvider(
+              create: (_) => DeviceInfoBloc(bridgeRepo, commandRegistry)),
+        ],
+        child: MaterialApp(
+          title: 'Pruebas Flutter',
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: scheme,
+            textTheme: GoogleFonts.interTextTheme(),
+          ),
+          home: const HomePage(),
         ),
-        home: const HomePage(),
       ),
     );
   }
@@ -117,18 +155,19 @@ class MyApp extends StatelessWidget {
 class _BridgeRepository implements BluetoothRepository {
   final BluetoothRepository spp;
   final BluetoothRepository ble;
+  final ScaleModelRegistry registry;
+  final ScaleProfileHolder profileHolder;
   BluetoothRepository? _active;
 
-  _BridgeRepository(this.spp, this.ble);
+  _BridgeRepository(this.spp, this.ble, this.registry, this.profileHolder);
 
   BluetoothRepository _pick(String id) {
-    // Tru-Test S3 es BLE aunque tenga formato MAC
-    if (id.toUpperCase().contains('DE:FD:76:A4:D7:ED')) {
-      print('🎯 Detectada S3 - usando BLE');
-      return ble;
-    }
-    // Resto de dispositivos por formato
-    return id.contains(':') ? spp : ble;
+    final descriptor = profileHolder.current;
+    final transport =
+        registry.chooseTransport(deviceId: id, descriptor: descriptor);
+    print(
+        '?Y"? Seleccionando transporte ${transport.name} para ${descriptor.id} ($id)');
+    return transport == TransportType.classic ? spp : ble;
   }
 
   @override

@@ -1,5 +1,12 @@
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
+/// Una clase de servicio que maneja los permisos de la aplicación.
+/// 
+/// Esta clase proporciona métodos para solicitar, verificar y gestionar varios
+/// permisos del dispositivo como cámara, ubicación, almacenamiento, etc.
+/// Actúa como un punto centralizado para todas las operaciones relacionadas
+/// con permisos en la aplicación.
+
 
 class PermissionService {
   Future<bool> ensureBlePermissions() async {

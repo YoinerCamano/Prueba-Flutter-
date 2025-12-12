@@ -225,19 +225,37 @@ class BluetoothAdapterSpp {
               '📥 Raw data S3: "${chunk.replaceAll('\r', '\\r').replaceAll('\n', '\\n')}"');
 
           _lineBuffer.write(chunk);
-          final parts = _lineBuffer.toString().split(RegExp(r'\r?\n'));
+          final bufferContent = _lineBuffer.toString();
 
-          for (int i = 0; i < parts.length - 1; i++) {
-            final line = parts[i].trim();
-            if (line.isNotEmpty) {
-              print('📊 Línea S3 completa: "$line"');
-              _controller.add(line);
+          // Si hay saltos de línea, procesar por líneas completas
+          // La EW7 a veces envía solo '\r' sin '\n': normalizamos todo a '\n'
+          if (bufferContent.contains('\n') || bufferContent.contains('\r')) {
+            final normalized = bufferContent.replaceAll('\r', '\n');
+            final parts = normalized.split(RegExp(r'\n+'));
+
+            for (int i = 0; i < parts.length - 1; i++) {
+              final line = parts[i].trim();
+              if (line.isNotEmpty) {
+                print('📊 Línea S3 completa: "$line"');
+                print('➡️ Emitiendo al bloc: "$line"');
+                _controller.add(line);
+              }
+            }
+
+            _lineBuffer
+              ..clear()
+              ..write(parts.last);
+          } else {
+            // Sin saltos de línea: emitir fragmentos directamente (EziWeigh7)
+            // Solo si hay contenido que no sea solo espacios
+            final trimmed = bufferContent.trim();
+            if (trimmed.isNotEmpty) {
+              print('📦 Fragmento directo: "$trimmed"');
+              print('➡️ Emitiendo al bloc (fragmento): "$trimmed"');
+              _controller.add(trimmed);
+              _lineBuffer.clear();
             }
           }
-
-          _lineBuffer
-            ..clear()
-            ..write(parts.last);
         },
         onDone: () {
           print('🔌 Conexión S3 terminada');
@@ -249,18 +267,22 @@ class BluetoothAdapterSpp {
         },
       );
 
-      // Inicialización específica para S3
-      print('⏳ Pausa antes del wake-up (2 segundos)...');
-      await Future.delayed(const Duration(milliseconds: 2000));
-      try {
-        print('📤 Enviando comando wake-up a S3...');
-        conn.output.add(utf8.encode('\r\n'));
-        await conn.output.allSent;
-        print('✅ Wake-up enviado');
-      } catch (e) {
-        print('⚠️ Advertencia comando wake-up: $e');
-      }
+      // Inicialización específica para S3 (no para EziWeigh7)
+      // La EziWeigh7 no necesita wake-up, responde inmediatamente
+      final needsWakeup = true; // TODO: Detectar modelo y condicionar
 
+      if (needsWakeup) {
+        print('⏳ Pausa antes del wake-up (2 segundos)...');
+        await Future.delayed(const Duration(milliseconds: 2000));
+        try {
+          print('📤 Enviando comando wake-up a S3...');
+          conn.output.add(utf8.encode('\r\n'));
+          await conn.output.allSent;
+          print('✅ Wake-up enviado');
+        } catch (e) {
+          print('⚠️ Advertencia comando wake-up: $e');
+        }
+      }
       print('');
       print('🎉 *** CONEXIÓN S3 COMPLETADA EXITOSAMENTE ***');
       print('⚖️ La báscula Tru-Test S3 está lista para recibir comandos');
