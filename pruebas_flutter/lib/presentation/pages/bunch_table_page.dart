@@ -467,6 +467,7 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                   final cuadrilla = d['cuadrilla'] as String?;
                   final lote = d['lote'] as String?;
                   final recusado = (d['recusado'] == 1);
+                  final recusadoDesc = d['recusadoDesc'] as String?;
 
                   return Card(
                     child: Padding(
@@ -498,6 +499,7 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                             cuadrilla: cuadrilla,
                             lote: lote,
                             recusado: recusado,
+                            recusadoDesc: recusadoDesc,
                           ),
                         ],
                       ),
@@ -801,6 +803,7 @@ class _EditableFieldsRow extends StatefulWidget {
   final String? cuadrilla;
   final String? lote;
   final bool recusado;
+  final String? recusadoDesc;
 
   const _EditableFieldsRow({
     super.key,
@@ -809,6 +812,7 @@ class _EditableFieldsRow extends StatefulWidget {
     this.cuadrilla,
     this.lote,
     required this.recusado,
+    this.recusadoDesc,
   });
 
   @override
@@ -816,8 +820,8 @@ class _EditableFieldsRow extends StatefulWidget {
 }
 
 class _EditableFieldsRowState extends State<_EditableFieldsRow> {
-  late TextEditingController _cuadrillaCtrl;
   late TextEditingController _loteCtrl;
+  late TextEditingController _recusadoDescCtrl;
   late bool _recusado;
   String? _selectedColor;
   bool _isEditing = false;
@@ -825,16 +829,16 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
   @override
   void initState() {
     super.initState();
-    _cuadrillaCtrl = TextEditingController(text: widget.cuadrilla ?? '');
     _loteCtrl = TextEditingController(text: widget.lote ?? '');
+    _recusadoDescCtrl = TextEditingController(text: widget.recusadoDesc ?? '');
     _recusado = widget.recusado;
     _selectedColor = widget.cintaColor;
   }
 
   @override
   void dispose() {
-    _cuadrillaCtrl.dispose();
     _loteCtrl.dispose();
+    _recusadoDescCtrl.dispose();
     super.dispose();
   }
 
@@ -861,11 +865,10 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
         cintaColor: _selectedColor?.trim().isEmpty ?? true
             ? null
             : _selectedColor?.trim(),
-        cuadrilla: _cuadrillaCtrl.text.trim().isEmpty
-            ? null
-            : _cuadrillaCtrl.text.trim(),
+        cuadrilla: widget.cuadrilla, // NO EDITABLE - mantener original
         lote: _loteCtrl.text.trim().isEmpty ? null : _loteCtrl.text.trim(),
         recusado: _recusado,
+        recusadoDesc: _recusado ? _recusadoDescCtrl.text : null,
       );
 
       // ✅ Mostrar confirmación DESPUÉS de guardar exitosamente
@@ -961,9 +964,9 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
           const SizedBox(height: 8),
           _DisplayRow(
               label: 'Cuadrilla',
-              value: _cuadrillaCtrl.text.isEmpty
+              value: widget.cuadrilla?.isEmpty ?? true
                   ? '(Sin asignar)'
-                  : _cuadrillaCtrl.text),
+                  : widget.cuadrilla!),
           const SizedBox(height: 8),
           _DisplayRow(
               label: 'Lote',
@@ -976,7 +979,23 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
                 child: Text('Recusado',
                     style: TextStyle(fontWeight: FontWeight.w500)),
               ),
-              Checkbox(value: _recusado, onChanged: null),
+              if (_recusado) ...[
+                Checkbox(value: true, onChanged: null),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _recusadoDescCtrl.text.isEmpty
+                        ? '(Sin descripción)'
+                        : _recusadoDescCtrl.text,
+                    style: TextStyle(
+                      color: _recusadoDescCtrl.text.isEmpty
+                          ? Colors.grey
+                          : Colors.black,
+                    ),
+                  ),
+                ),
+              ] else
+                Checkbox(value: false, onChanged: null),
             ],
           ),
           const SizedBox(height: 12),
@@ -1008,14 +1027,33 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
           onColorSelected: (color) => setState(() => _selectedColor = color),
         ),
         const SizedBox(height: 16),
-        TextField(
-          controller: _cuadrillaCtrl,
-          decoration: InputDecoration(
-            labelText: 'Cuadrilla',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey.shade300),
+            borderRadius: BorderRadius.circular(8),
+            color: Colors.grey.shade100,
+          ),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 100,
+                child: Text('Cuadrilla',
+                    style: TextStyle(fontWeight: FontWeight.w500)),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  widget.cuadrilla?.isEmpty ?? true
+                      ? '(Sin asignar)'
+                      : widget.cuadrilla!,
+                  style: const TextStyle(color: Colors.black87),
+                ),
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
         TextField(
           controller: _loteCtrl,
           decoration: InputDecoration(
@@ -1033,6 +1071,21 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
             const Text('Recusado'),
           ],
         ),
+        if (_recusado) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _recusadoDescCtrl,
+            maxLines: 3,
+            maxLength: 140,
+            decoration: InputDecoration(
+              labelText: 'Razón del rechazo',
+              hintText: 'Describe por qué fue recusado',
+              counterText: '',
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
@@ -1040,9 +1093,9 @@ class _EditableFieldsRowState extends State<_EditableFieldsRow> {
             TextButton(
               onPressed: () => setState(() {
                 _isEditing = false;
-                _cuadrillaCtrl.text = widget.cuadrilla ?? '';
                 _loteCtrl.text = widget.lote ?? '';
                 _recusado = widget.recusado;
+                _recusadoDescCtrl.text = widget.recusadoDesc ?? '';
                 _selectedColor = widget.cintaColor;
               }),
               child: const Text('Cancelar'),

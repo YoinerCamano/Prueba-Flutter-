@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/device_info/device_info_bloc.dart';
+import '../../data/local/database_service.dart';
 
 /// 📋 Página dedicada para mostrar información técnica del dispositivo
 /// El polling de peso se detiene automáticamente al entrar aquí
 class DeviceInfoPage extends StatefulWidget {
-  const DeviceInfoPage({super.key});
+  final int? basculaId;
+  const DeviceInfoPage({super.key, this.basculaId});
 
   @override
   State<DeviceInfoPage> createState() => _DeviceInfoPageState();
@@ -20,9 +22,7 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   String _currentCommand = '';
 
   // 📋 Datos recopilados
-  String? _serialNumber;
   String? _firmwareVersion;
-  String? _cellCode;
   String? _cellLoadmVV;
   String? _microvoltsPerDivision;
   String? _adcNoise;
@@ -39,18 +39,67 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   late final conn.ConnectionBloc
       _connectionBloc; // solo para pausar/reanudar peso
   late final DeviceInfoBloc _deviceInfoBloc;
+  final DatabaseService _dbService = DatabaseService();
 
-  // 📝 Secuencia de comandos
-  final List<Map<String, String>> _commandSequence = [
-    {'command': '{TTCSER}', 'label': 'Número de Serie'},
-    {'command': '{VA}', 'label': 'Firmware'},
-    {'command': '{SACC}', 'label': 'Código de Celda'},
-    {'command': '{SCLS}', 'label': 'Celda de Carga'},
-    {'command': '{SCMV}', 'label': 'Microvoltios/División'},
-    {'command': '{SCAV}', 'label': 'Ruido CAD'},
-    {'command': '{BV}', 'label': 'Voltaje Batería'},
-    {'command': '{BC}', 'label': 'Porcentaje Batería'},
-  ];
+  // 📝 Secuencia de comandos (se genera dinámicamente según capacidades)
+  List<Map<String, String>> _commandSequence = [];
+  List<String> _periodicCommands = []; // Comandos para refresco periódico
+
+  /// 🔧 Generar secuencia de comandos según capacidades de la báscula
+  void _generateCommandSequence() {
+    final connState = _connectionBloc.state;
+    if (connState is! conn.Connected) {
+      print('⚠️ No conectado, usando secuencia completa por defecto');
+      _commandSequence = [
+        {'command': '{TTCSER}', 'label': 'Número de Serie'},
+        {'command': '{VA}', 'label': 'Firmware'},
+        {'command': '{SCLS}', 'label': 'Celda de Carga'},
+        {'command': '{SCMV}', 'label': 'Microvoltios/División'},
+        {'command': '{BV}', 'label': 'Voltaje Batería'},
+        {'command': '{BC}', 'label': 'Porcentaje Batería'},
+      ];
+      _periodicCommands = [
+        '{SCLS}',
+        '{SCMV}'
+      ]; // Solo actualizar estos periódicamente
+      return;
+    }
+
+    final scale = connState.scale;
+    print('🔧 Generando secuencia de comandos para: ${scale.name}');
+    print('   - Batería: ${scale.capabilities.supportsBattery}');
+    print('   - Info Técnica: ${scale.capabilities.supportsTechnicalInfo}');
+
+    _commandSequence = [];
+    _periodicCommands = [];
+
+    // Comandos de información técnica
+    if (scale.capabilities.supportsTechnicalInfo) {
+      // Consulta única: Número de serie y Firmware
+      _commandSequence.addAll([
+        {'command': '{TTCSER}', 'label': 'Número de Serie'},
+        {'command': '{VA}', 'label': 'Firmware'},
+      ]);
+
+      // Consulta periódica: Celda de Carga y Microvoltios
+      _commandSequence.addAll([
+        {'command': '{SCLS}', 'label': 'Celda de Carga'},
+        {'command': '{SCMV}', 'label': 'Microvoltios/División'},
+      ]);
+
+      _periodicCommands = ['{SCLS}', '{SCMV}'];
+    }
+
+    // Comandos de batería (solo si está soportado)
+    if (scale.capabilities.supportsBattery) {
+      _commandSequence.addAll([
+        {'command': '{BV}', 'label': 'Voltaje Batería'},
+        {'command': '{BC}', 'label': 'Porcentaje Batería'},
+      ]);
+    }
+
+    print('✅ Secuencia generada con ${_commandSequence.length} comandos');
+  }
 
   @override
   void initState() {
@@ -61,7 +110,10 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     _connectionBloc = context.read<conn.ConnectionBloc>();
     _deviceInfoBloc = context.read<DeviceInfoBloc>();
 
-    // 🛑 DETENER POLLING DE PESO (se gestiona en ConnectionBloc)
+    // 🔧 Generar secuencia de comandos según capacidades
+    _generateCommandSequence();
+
+    //  DETENER POLLING DE PESO (se gestiona en ConnectionBloc)
     print('🛑 Deteniendo polling de peso...');
     _connectionBloc.add(conn.StopPolling());
 
@@ -99,20 +151,13 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     // 📊 PRIMERO: Verificar si ya hay datos en el estado actual
     final currentState = _deviceInfoBloc.state;
     print('📊 Estado actual verificado:');
-    print('  - Serial: ${currentState.serialNumber}');
     print('  - Firmware: ${currentState.firmwareVersion}');
     print('  - Cell Code: ${currentState.cellCode}');
     print('  - Cell Load: ${currentState.cellLoadmVV}');
 
     // Si ya hay datos, usarlos
-    if (currentState.serialNumber != null) {
-      _serialNumber = currentState.serialNumber;
-    }
     if (currentState.firmwareVersion != null) {
       _firmwareVersion = currentState.firmwareVersion;
-    }
-    if (currentState.cellCode != null) {
-      _cellCode = currentState.cellCode;
     }
     if (currentState.cellLoadmVV != null) {
       _cellLoadmVV = currentState.cellLoadmVV;
@@ -129,23 +174,15 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
     }
 
     print('🔍 Verificación de datos completos:');
-    print('  - serialNumber: $_serialNumber');
     print('  - firmwareVersion: $_firmwareVersion');
-    print('  - cellCode: $_cellCode');
     print('  - cellLoadmVV: $_cellLoadmVV');
     print('  - adcNoise: $_adcNoise');
     print('  - batteryVolts: $_batteryVolts');
     print('  - batteryPercent: $_batteryPercent');
 
-    // Si todos los datos están disponibles, no recargar
-    if (_serialNumber != null &&
-        _firmwareVersion != null &&
-        _cellCode != null &&
-        _cellLoadmVV != null &&
-        _adcNoise != null &&
-        _batteryVolts != null &&
-        _batteryPercent != null) {
-      print('✅ Todos los datos ya disponibles - Omitiendo recarga');
+    // Solo requerimos los datos periódicos para considerarlo completo
+    if (_cellLoadmVV != null && _microvoltsPerDivision != null) {
+      print('✅ Datos periódicos disponibles - Omitiendo recarga inicial');
       setState(() {
         _isLoading = false;
       });
@@ -218,9 +255,9 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
       switch (_currentCommand) {
         case '{TTCSER}':
           if (state.serialNumber != null &&
-              state.serialNumber != _serialNumber) {
-            print('📋 Recibido: Número de Serie = ${state.serialNumber}');
-            _serialNumber = state.serialNumber;
+              state.serialNumber != 'No disponible') {
+            print('📋 Recibido: Serial = ${state.serialNumber}');
+            _saveSerialNumberToDatabase(state.serialNumber!);
             shouldMoveNext = true;
             stateChanged = true;
           }
@@ -257,31 +294,34 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
           }
           break;
 
-        case '{SACC}':
-          if (state.cellCode != null && state.cellCode != _cellCode) {
-            print('🏷️ Recibido: Código de Celda = ${state.cellCode}');
-            _cellCode = state.cellCode;
-            shouldMoveNext = true;
-            stateChanged = true;
-          }
-          break;
-
         case '{SCLS}':
           if (state.cellLoadmVV != null && state.cellLoadmVV != _cellLoadmVV) {
-            print('⚡ Recibido: Celda = ${state.cellLoadmVV}');
+            print(
+                '⚡ Recibido SCLS: state.cellLoadmVV = ${state.cellLoadmVV}, antes era $_cellLoadmVV');
             _cellLoadmVV = state.cellLoadmVV;
             shouldMoveNext = true;
             stateChanged = true;
+          } else if (state.cellLoadmVV == null) {
+            print('⚠️ SCLS: state.cellLoadmVV es nulo');
+          } else if (state.cellLoadmVV == _cellLoadmVV) {
+            print(
+                '⚠️ SCLS: sin cambios (${state.cellLoadmVV} == $_cellLoadmVV)');
           }
           break;
 
         case '{SCMV}':
           if (state.microvoltsPerDivision != null &&
               state.microvoltsPerDivision != _microvoltsPerDivision) {
-            print('🎚️ Recibido: µV/div = ${state.microvoltsPerDivision}');
+            print(
+                '🎚️ Recibido SCMV: state.microvoltsPerDivision = ${state.microvoltsPerDivision}, antes era $_microvoltsPerDivision');
             _microvoltsPerDivision = state.microvoltsPerDivision;
             shouldMoveNext = true;
             stateChanged = true;
+          } else if (state.microvoltsPerDivision == null) {
+            print('⚠️ SCMV: state.microvoltsPerDivision es nulo');
+          } else if (state.microvoltsPerDivision == _microvoltsPerDivision) {
+            print(
+                '⚠️ SCMV: sin cambios (${state.microvoltsPerDivision} == $_microvoltsPerDivision)');
           }
           break;
 
@@ -313,6 +353,8 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
         _adcNoise = state.adcNoise;
         stateChanged = true;
       }
+      // Guardar ruido CAD localmente
+      _adcNoise = state.adcNoise ?? _adcNoise;
       if (state.batteryVoltage?.volts != null &&
           state.batteryVoltage!.volts != _batteryVolts) {
         print('♻️ Actualizado: Voltaje = ${state.batteryVoltage!.volts}');
@@ -354,13 +396,13 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
   /// ♻️ Refresco periódico mientras la página está abierta
   void _startPeriodicRefresh() {
     _refreshTimer?.cancel();
-    // Temporal: refrescar el paquete completo de datos técnicos en secuencia
+    // Solo refrescar comandos periódicos (celda y microvoltios)
     _refreshTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted || _isLoading || _refreshInFlight) return;
       _refreshInFlight = true;
 
-      final cmds = _commandSequence.map((e) => e['command']!).toList();
-      print('🔄 Refresco periódico: ${cmds.length} comandos en total');
+      final cmds = _periodicCommands;
+      print('🔄 Refresco periódico: ${cmds.length} comandos');
       print('🔄 Comandos: ${cmds.join(", ")}');
 
       const gap = Duration(milliseconds: 80);
@@ -380,6 +422,47 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
         }
       });
     });
+  }
+
+  /// 💾 Guardar número de serie en la base de datos
+  Future<void> _saveSerialNumberToDatabase(String serialNumber) async {
+    try {
+      final connState = _connectionBloc.state;
+      if (connState is! conn.Connected) {
+        print('⚠️ No hay conexión activa, no se puede guardar serial');
+        return;
+      }
+
+      final mac = connState.device.id;
+      print(
+          '💾 Guardando número de serie "$serialNumber" para MAC: $mac (Báscula ID: ${widget.basculaId})');
+
+      if (widget.basculaId == null) {
+        print('⚠️ ID de báscula no disponible');
+        return;
+      }
+
+      // Buscar la báscula por MAC en la BD
+      final bascula = await _dbService.getBasculaByMac(mac);
+      if (bascula == null) {
+        print('⚠️ Báscula con MAC $mac no encontrada en BD');
+        return;
+      }
+
+      // Actualizar la báscula con el nuevo número de serie
+      await _dbService.updateBascula(
+        id: bascula.idBascula!,
+        nombre: bascula.nombre,
+        modelo: bascula.modelo,
+        numeroSerie: serialNumber,
+        mac: bascula.mac,
+        ubicacion: bascula.ubicacion,
+      );
+
+      print('✅ Número de serie guardado exitosamente en BD');
+    } catch (e) {
+      print('❌ Error al guardar número de serie: $e');
+    }
   }
 
   @override
@@ -463,8 +546,9 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
                     _buildTechnicalInfoCard(state, connState),
                     const SizedBox(height: 16),
 
-                    // 🔋 Información de batería al final
-                    _buildBatteryInfoCard(state),
+                    // 🔋 Información de batería (solo si el modelo lo soporta)
+                    if (connState.scale.capabilities.supportsBattery)
+                      _buildBatteryInfoCard(state),
                   ],
                 ),
               );
@@ -507,14 +591,6 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
             ),
             const SizedBox(height: 16),
             _buildTechInfoRow(
-              icon: Icons.confirmation_number,
-              label: 'Número de Serie',
-              value: state.serialNumber ??
-                  _serialNumber ??
-                  (_isLoading ? 'Cargando...' : 'No disponible'),
-            ),
-            const SizedBox(height: 12),
-            _buildTechInfoRow(
               icon: Icons.memory,
               label: 'Firmware',
               value: state.firmwareVersion ??
@@ -523,18 +599,15 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
-              icon: Icons.qr_code,
-              label: 'Código de Celda',
-              value: state.cellCode ??
-                  _cellCode ??
-                  (_isLoading ? 'Cargando...' : 'No disponible'),
+              icon: Icons.tag,
+              label: 'Número de Serie',
+              value: state.serialNumber ?? 'No disponible',
             ),
             const SizedBox(height: 12),
             _buildTechInfoRow(
               icon: Icons.electrical_services,
               label: 'Celda de Carga (mV/V)',
               value: state.cellLoadmVV ??
-                  _cellLoadmVV ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
             const SizedBox(height: 12),
@@ -542,15 +615,6 @@ class _DeviceInfoPageState extends State<DeviceInfoPage> {
               icon: Icons.tune,
               label: 'Microvoltios/División',
               value: state.microvoltsPerDivision ??
-                  _microvoltsPerDivision ??
-                  (_isLoading ? 'Cargando...' : 'No disponible'),
-            ),
-            const SizedBox(height: 12),
-            _buildTechInfoRow(
-              icon: Icons.graphic_eq,
-              label: 'Ruido CAD',
-              value: state.adcNoise ??
-                  _adcNoise ??
                   (_isLoading ? 'Cargando...' : 'No disponible'),
             ),
           ],

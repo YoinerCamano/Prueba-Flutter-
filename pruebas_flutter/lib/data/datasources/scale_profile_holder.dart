@@ -1,4 +1,4 @@
-import '../../domain/entities.dart';
+import 'scale_model_registry.dart';
 
 /// Guarda el perfil/modelo activo de la báscula para compartirlo entre BLoCs.
 class ScaleProfileHolder {

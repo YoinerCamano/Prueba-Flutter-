@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 /// Muestra datos como SN, firmware, código de celda, etc.
 /// Similar a WeightCard pero para información técnica
 class DeviceInfoCard extends StatelessWidget {
-  final String? serialNumber;
   final String? firmwareVersion;
   final String? cellCode;
   final String? cellLoadmVV;
@@ -12,7 +11,6 @@ class DeviceInfoCard extends StatelessWidget {
 
   const DeviceInfoCard({
     super.key,
-    this.serialNumber,
     this.firmwareVersion,
     this.cellCode,
     this.cellLoadmVV,
@@ -21,7 +19,6 @@ class DeviceInfoCard extends StatelessWidget {
 
   /// Verificar si toda la información está disponible
   bool get isFullyLoaded =>
-      serialNumber != null &&
       firmwareVersion != null &&
       cellCode != null &&
       cellLoadmVV != null &&
@@ -34,7 +31,7 @@ class DeviceInfoCard extends StatelessWidget {
   Widget build(BuildContext context) {
     // 🔍 Log para depuración
     print(
-        '🔧 DeviceInfoCard - SN: $serialNumber, FW: $firmwareVersion, Cell: $cellCode, mVV: $cellLoadmVV, μV: $microvoltsPerDivision');
+        '🔧 DeviceInfoCard - FW: $firmwareVersion, Cell: $cellCode, mVV: $cellLoadmVV, μV: $microvoltsPerDivision');
 
     return Card(
       elevation: 0,
@@ -66,14 +63,6 @@ class DeviceInfoCard extends StatelessWidget {
             const SizedBox(height: 16),
 
             // Siempre mostrar los campos (cargando o con datos)
-            _buildInfoRow(
-              context,
-              icon: Icons.confirmation_number,
-              label: 'Número de Serie',
-              value: serialNumber,
-              command: '{TTCSER}',
-            ),
-            const SizedBox(height: 12),
             _buildInfoRow(
               context,
               icon: Icons.memory,

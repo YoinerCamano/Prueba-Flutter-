@@ -19,11 +19,6 @@ class CommandRegistry {
       key: 'bateria_voltaje',
       description: 'Voltaje de batería',
     ),
-    '{TTCSER}': const DeviceCommand(
-      code: '{TTCSER}',
-      key: 'numero_serie',
-      description: 'Número de serie',
-    ),
     '{VA}': const DeviceCommand(
       code: '{VA}',
       key: 'version_firmware',

@@ -135,8 +135,7 @@ class MyApp extends StatelessWidget {
               create: (_) => ConnectionBloc(bridgeRepo, commandRegistry,
                   scaleModelRegistry, scaleProfileHolder)),
           BlocProvider(
-              create: (_) => DeviceInfoBloc(bridgeRepo, commandRegistry,
-                  scaleProfileHolder, scaleModelRegistry)),
+              create: (_) => DeviceInfoBloc(bridgeRepo, commandRegistry)),
         ],
         child: MaterialApp(
           title: 'Pruebas Flutter',

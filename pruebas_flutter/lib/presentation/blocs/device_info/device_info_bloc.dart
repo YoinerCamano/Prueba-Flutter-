@@ -5,8 +5,6 @@ import '../../../core/utils/number_parsing.dart';
 import '../../../domain/bluetooth_repository.dart';
 import '../../../domain/entities.dart';
 import '../../../data/datasources/command_registry.dart';
-import '../../../data/datasources/scale_model_registry.dart';
-import '../../../data/datasources/scale_profile_holder.dart';
 
 part 'device_info_event.dart';
 part 'device_info_state.dart';
@@ -16,17 +14,15 @@ part 'device_info_state.dart';
 class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
   final BluetoothRepository repo;
   final CommandRegistry _commandRegistry;
-  final ScaleProfileHolder _profileHolder;
-  final ScaleModelRegistry _scaleRegistry;
   StreamSubscription<String>? _sub;
 
   String? _lastCommandSent;
   bool _waitingForResponse = false;
   Timer? _responseTimeoutTimer;
   final List<String> _pendingQueue = [];
+  String? _pendingFragment; // Para manejar respuestas partidas (EziWeigh7)
 
-  DeviceInfoBloc(
-      this.repo, this._commandRegistry, this._profileHolder, this._scaleRegistry)
+  DeviceInfoBloc(this.repo, this._commandRegistry)
       : super(const DeviceInfoState()) {
     on<DeviceInfoStartListening>(_onStartListening);
     on<DeviceInfoStopListening>(_onStopListening);
@@ -97,7 +93,7 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
 
   Future<void> _onRawLine(
       DeviceInfoRawLineArrived e, Emitter<DeviceInfoState> emit) async {
-    final line = e.line.trim();
+    var line = e.line.trim();
     if (line.isEmpty || line == '__DISCONNECTED__') {
       return;
     }
@@ -105,18 +101,40 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
       return;
     }
 
+    // 🔧 Manejo de fragmentos partidos (EziWeigh7)
+    // Si la línea empieza con [ pero no termina con ], guardar fragmento
+    if (line.startsWith('[') && !line.contains(']')) {
+      _pendingFragment = line;
+      print('🧩 DeviceInfoBloc: Fragmento inicial guardado: "$line"');
+      return;
+    }
+
+    // Si tenemos un fragmento pendiente y llega el final
+    if (_pendingFragment != null && line.contains(']')) {
+      line = (_pendingFragment! + line).replaceAll(RegExp(r'\s+'), '');
+      _pendingFragment = null;
+      print('✅ DeviceInfoBloc: Fragmentos ensamblados: "$line"');
+    }
+
     final lastCommand = _lastCommandSent;
+    print(
+        '📥 DeviceInfoBloc._onRawLine: lastCommand=$lastCommand, line="$line"');
+
     // Si no tenemos comando previo o el comando previo no es técnico, ignorar
     if (lastCommand == null || !_isTechnicalCommand(lastCommand)) {
+      print('⚠️ Ignorando línea: comando no técnico o null');
       return;
     }
 
     final cleaned = (line.startsWith('[') && line.endsWith(']'))
         ? line.substring(1, line.length - 1).trim()
         : line.trim();
+    print('🧹 DeviceInfoBloc: cleaned="$cleaned"');
 
     // Datos numéricos (voltaje / porcentaje)
     final number = extractFirstNumber(cleaned);
+    print('🔢 DeviceInfoBloc: número extraído = $number');
+
     if (number != null) {
       if (lastCommand == '{BV}' && number > 0 && number <= 20) {
         print('🔋 DeviceInfoBloc: Asignando voltaje = $number V');
@@ -147,19 +165,21 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
 
     // Datos textuales
     if (lastCommand == '{TTCSER}') {
-      // Validar que el valor no sea un peso (serial debe ser > 1,000,000 si es numérico)
-      final isPureNumeric = RegExp(r'^\d+(?:[\.,]\d+)?$').hasMatch(cleaned);
-      final serialNumberCandidate =
-          isPureNumeric ? extractFirstNumber(cleaned) : null;
-      final likelyWeight =
-          (serialNumberCandidate != null && serialNumberCandidate < 1000000) ||
-              _looksLikeWeightReading(cleaned);
-      if (likelyWeight) {
-        return; // Ignorar peso infiltrado
-      }
+      // Número de serie
       _waitingForResponse = false;
       _responseTimeoutTimer?.cancel();
-      emit(state.copyWith(serialNumber: cleaned));
+      // Validar > 100,000
+      final digitsOnly = RegExp(r'\d+').firstMatch(cleaned)?.group(0);
+      if (digitsOnly != null) {
+        final value = int.tryParse(digitsOnly);
+        if (value != null && value > 100000) {
+          print('📋 DeviceInfoBloc: Número de serie válido = $cleaned');
+          emit(state.copyWith(serialNumber: cleaned));
+        } else {
+          print(
+              '⚠️ DeviceInfoBloc: Serial rechazado (${value ?? 'no numérico'}): $cleaned');
+        }
+      }
       _sendNextFromQueue();
       return;
     }
@@ -173,17 +193,8 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
       _sendNextFromQueue();
       return;
     }
-    if (lastCommand == '{SACC}') {
-      if (_looksLikeWeightReading(cleaned)) {
-        return;
-      }
-      _waitingForResponse = false;
-      _responseTimeoutTimer?.cancel();
-      emit(state.copyWith(cellCode: cleaned));
-      _sendNextFromQueue();
-      return;
-    }
     if (lastCommand == '{SCLS}') {
+      print('🔍 DeviceInfoBloc: Procesando {SCLS}...');
       _waitingForResponse = false;
       _responseTimeoutTimer?.cancel();
       final parts =
@@ -194,6 +205,7 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
               RegExp(r'(mV\/V|μV\/div|uV\/div|mV|μV|uV)', caseSensitive: false),
               '')
           .trim();
+      print('⚡ DeviceInfoBloc: Emitiendo cellLoadmVV = "$normalized mV/V"');
       emit(state.copyWith(
         cellLoadmVV: '$normalized mV/V',
       ));
@@ -207,31 +219,12 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
           .replaceAll(
               RegExp(r'(μV\/div|uV\/div|μV|uV)', caseSensitive: false), '')
           .trim();
+      print(
+          '🎚️ DeviceInfoBloc: Emitiendo microvoltsPerDivision = "$normalized"');
       emit(state.copyWith(microvoltsPerDivision: normalized));
       _sendNextFromQueue();
       return;
     }
-    if (lastCommand == '{SCAV}') {
-      _waitingForResponse = false;
-      _responseTimeoutTimer?.cancel();
-      emit(state.copyWith(adcNoise: cleaned));
-      _sendNextFromQueue();
-      return;
-    }
-  }
-
-  bool _looksLikeWeightReading(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return false;
-
-    // Patrones típicos de peso: [123.4], [U1.2], U1.2
-    final weightBracket = RegExp(r'^\[\s*[Uu-]?\d+(?:[\.,]\d+)?\s*\]$');
-    final weightUnstable = RegExp(r'^[Uu]\d+(?:[\.,]\d+)?$');
-
-    if (weightBracket.hasMatch(trimmed) || weightUnstable.hasMatch(trimmed)) {
-      return true;
-    }
-    return false;
   }
 
   bool _isWeightNoise(String raw) {
@@ -247,10 +240,8 @@ class DeviceInfoBloc extends Bloc<DeviceInfoEvent, DeviceInfoState> {
   bool _isTechnicalCommand(String cmd) {
     return cmd == '{TTCSER}' ||
         cmd == '{VA}' ||
-        cmd == '{SACC}' ||
         cmd == '{SCLS}' ||
         cmd == '{SCMV}' ||
-        cmd == '{SCAV}' ||
         cmd == '{BV}' ||
         cmd == '{BC}';
   }

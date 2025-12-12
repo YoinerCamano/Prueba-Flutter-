@@ -19,7 +19,6 @@ class _DeviceInfoLoaderState extends State<DeviceInfoLoader> {
   String _currentCommand = '';
 
   // 📋 Datos recopilados
-  String? _serialNumber;
   String? _firmwareVersion;
   String? _cellCode;
   String? _cellLoadmVV;
@@ -31,7 +30,6 @@ class _DeviceInfoLoaderState extends State<DeviceInfoLoader> {
 
   // 📝 Secuencia de comandos
   final List<Map<String, String>> _commandSequence = [
-    {'command': '{TTCSER}', 'label': 'Número de Serie'},
     {'command': '{VA}', 'label': 'Firmware'},
     {'command': '{SACC}', 'label': 'Código de Celda'},
     {'command': '{SCLS}', 'label': 'Especificaciones'},
@@ -124,14 +122,6 @@ class _DeviceInfoLoaderState extends State<DeviceInfoLoader> {
 
     // Verificar qué dato llegó según el comando actual
     switch (_currentCommand) {
-      case '{TTCSER}':
-        if (state.serialNumber != null && state.serialNumber != _serialNumber) {
-          print('📋 Recibido: Número de Serie = ${state.serialNumber}');
-          _serialNumber = state.serialNumber;
-          shouldMoveNext = true;
-        }
-        break;
-
       case '{VA}':
         if (state.firmwareVersion != null &&
             state.firmwareVersion != _firmwareVersion) {
@@ -245,12 +235,6 @@ class _DeviceInfoLoaderState extends State<DeviceInfoLoader> {
             const SizedBox(height: 16),
 
             // Datos
-            _buildInfoRow(
-              icon: Icons.confirmation_number,
-              label: 'Número de Serie',
-              value: _serialNumber ?? 'No disponible',
-            ),
-            const SizedBox(height: 12),
             _buildInfoRow(
               icon: Icons.memory,
               label: 'Firmware',

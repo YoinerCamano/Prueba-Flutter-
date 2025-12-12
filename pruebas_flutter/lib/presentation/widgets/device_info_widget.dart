@@ -18,14 +18,12 @@ class DeviceInfoWidget extends StatefulWidget {
 
 class _DeviceInfoWidgetState extends State<DeviceInfoWidget> {
   // 📋 Datos técnicos del dispositivo
-  String? serialNumber;
   String? firmwareVersion;
   String? cellCode;
   String? cellLoadmVV;
   String? microvoltsPerDivision;
 
   // 🔄 Estados de carga
-  bool isLoadingSerial = false;
   bool isLoadingFirmware = false;
   bool isLoadingCellCode = false;
   bool isLoadingCellSpecs = false;
@@ -61,27 +59,7 @@ class _DeviceInfoWidgetState extends State<DeviceInfoWidget> {
     });
 
     // Secuencia de comandos para obtener información
-    _requestSerialNumber();
-  }
-
-  /// 📤 Solicitar número de serie {TTCSER}
-  void _requestSerialNumber() {
-    setState(() => isLoadingSerial = true);
-    print('📤 Solicitando número de serie: {TTCSER}');
-
-    widget.connectionBloc.add(conn.SendCommandRequested('{TTCSER}'));
-
-    // Timeout para este comando
-    _commandTimeout?.cancel();
-    _commandTimeout = Timer(const Duration(seconds: 3), () {
-      if (mounted && isLoadingSerial) {
-        setState(() {
-          isLoadingSerial = false;
-          serialNumber = 'Timeout - No disponible';
-        });
-        _requestFirmwareVersion();
-      }
-    });
+    _requestFirmwareVersion();
   }
 
   /// 📤 Solicitar versión de firmware {VA}
@@ -148,18 +126,6 @@ class _DeviceInfoWidgetState extends State<DeviceInfoWidget> {
     // de cada comando basándonos en el patrón de respuesta del dispositivo
 
     // Simular datos por ahora (esto se reemplazará con lógica real)
-    if (isLoadingSerial && serialNumber == null) {
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted) {
-          setState(() {
-            serialNumber = 'TTS3-240001'; // Simulado
-            isLoadingSerial = false;
-          });
-          _requestFirmwareVersion();
-        }
-      });
-    }
-
     if (isLoadingFirmware && firmwareVersion == null) {
       Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted) {
@@ -204,16 +170,6 @@ class _DeviceInfoWidgetState extends State<DeviceInfoWidget> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // 🔢 Número de Serie
-        _buildTechnicalInfoRow(
-          icon: Icons.confirmation_number,
-          label: 'Número de Serie',
-          value: serialNumber,
-          isLoading: isLoadingSerial,
-          command: '{TTCSER}',
-        ),
-        const SizedBox(height: 12),
-
-        // 🔧 Versión de Firmware
         _buildTechnicalInfoRow(
           icon: Icons.memory,
           label: 'Firmware',

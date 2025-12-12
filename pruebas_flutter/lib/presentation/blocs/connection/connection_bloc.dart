@@ -93,9 +93,9 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
         emit(ConnectionState.connected(device: e.device, scale: descriptor));
 
-        // 🎯 LIMPIO: Solo inicializar variables de peso
-        print('✅ Conexión establecida → Listo para polling de peso');
-        // add(StartPolling()); // ❌ DESACTIVADO - Solo iniciar cuando se necesite
+        // 🎯 Iniciar polling automáticamente
+        print('✅ Conexión establecida → Iniciando polling de peso...');
+        add(StartPolling());
       } else {
         emit(ConnectionState.error(
             'La conexión no se estableció correctamente'));
@@ -238,25 +238,24 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       }
     } else if (_initializationStep == 2) {
       // Esperando respuesta de {SPWU}
-      // Respuesta típica: "kg" o "lb" o "^" (ACK de cambio)
-      final lower = line.toLowerCase();
-      if (lower.contains('0') || lower.contains('1') || line == '^') {
+      // Solo procesar si el último comando enviado fue {SPWU}
+      if (_lastInitCommand != ScaleCommand.weightUnit.code &&
+          _lastInitCommand != '{SPWU}') {
+        // No es respuesta a {SPWU}, ignorar esta línea
+        return;
+      }
+
+      final lower = line.toLowerCase().trim();
+
+      // Aceptar solo respuestas esperadas de unidad
+      if (lower == 'kg' || lower == 'lb' || lower == '0' || lower == '1') {
         print('✅ INIT Paso 2: {SPWU} recibido: $line');
         _initTimeoutTimer?.cancel();
         String? unit;
-        if (lower.contains('1')) {
+        if (lower == '1' || lower == 'lb') {
           unit = 'lb';
-        } else if (lower.contains('0')) {
+        } else if (lower == '0' || lower == 'kg') {
           unit = 'kg';
-        } else if (line == '^') {
-          if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
-            unit = 'lb';
-          } else if (_lastInitCommand == ScaleCommand.setUnitKg.code) {
-            unit = 'kg';
-          } else {
-            // ACK sin pista: si no sabemos, conservar previa
-            unit = s.weightUnit;
-          }
         }
         emit(s.copyWith(weightUnit: unit ?? s.weightUnit));
         _initializationStep = 0; // INICIALIZACIÓN COMPLETADA
@@ -473,12 +472,12 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     print('🎯 === INICIANDO POLLING CON INICIALIZACIÓN ===');
 
-    // Paso 1: Enviar {ZA1} para habilitar confirmación de comandos
+    // Optimización EW7: iniciar lectura de peso inmediatamente, sin secuencia previa
     if (_isEzi) {
       print(
-          '📤 EW7: Enviando secuencia {ZA1} → {ZE1} → {ZC1} antes de leer peso');
-      _initializationStep = _ew7StepZa1;
-      add(SendCommandRequested(ScaleCommand.enableAcknowledgment.code));
+          '⚡ EW7: Saltando inicialización, iniciando lectura de peso inmediata');
+      _initializationStep = 0;
+      _sendNextWeightCommand();
       return;
     }
 

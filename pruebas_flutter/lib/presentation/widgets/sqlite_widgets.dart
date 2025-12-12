@@ -115,6 +115,9 @@ class BunchHistoryWidget extends StatelessWidget {
             final weighingTime = bunch['weighingTime'] as String?;
             final cintaColor = bunch['cintaColor'] ?? '';
             final cuadrilla = bunch['cuadrilla'] ?? '';
+            final operario = bunch['operario'] ?? '';
+            final bascula = bunch['bascula'] ?? '';
+            final basculaModelo = bunch['bascula_modelo'] ?? '';
             final lote = bunch['lote'] ?? '';
             final recusado = bunch['recusado'] == 1;
             final synced =
@@ -203,13 +206,20 @@ class BunchHistoryWidget extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text('$dateStr $timeStr'),
-                    if (cuadrilla.isNotEmpty || lote.isNotEmpty)
+                    if (cuadrilla.isNotEmpty ||
+                        operario.isNotEmpty ||
+                        bascula.isNotEmpty)
                       Text(
                         [
                           if (cuadrilla.isNotEmpty) 'Cuadrilla: $cuadrilla',
+                          if (operario.isNotEmpty) 'Operario: $operario',
+                          if (bascula.isNotEmpty)
+                            'Báscula: $bascula${basculaModelo.isNotEmpty ? " ($basculaModelo)" : ""}',
                           if (lote.isNotEmpty) 'Lote: $lote',
                         ].join(' • '),
                         style: const TextStyle(fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
                   ],
                 ),
@@ -297,8 +307,7 @@ class BunchHistoryWidget extends StatelessWidget {
     }
   }
 
-  List<Map<String, dynamic>> _applyFilters(
-      List<Map<String, dynamic>> bunches) {
+  List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> bunches) {
     if (filters.isEmpty) return bunches;
     final minW = filters.minWeight;
     final maxW = filters.maxWeight;
@@ -359,8 +368,8 @@ class BunchHistoryWidget extends StatelessWidget {
           DateTime? dt;
           if (raw is String) dt = DateTime.parse(raw).toLocal();
           if (dt != null) {
-            if (filters.startDate != null &&
-                dt.isBefore(filters.startDate!)) return false;
+            if (filters.startDate != null && dt.isBefore(filters.startDate!))
+              return false;
             if (filters.endDate != null && dt.isAfter(filters.endDate!)) {
               return false;
             }

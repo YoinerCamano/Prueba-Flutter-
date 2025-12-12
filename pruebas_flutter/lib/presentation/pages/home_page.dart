@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../domain/entities.dart';
+import '../../data/local/database_service.dart';
 import '../../core/database_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../blocs/scan/scan_cubit.dart';
@@ -29,6 +30,21 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   // Controla si el diálogo de "Conectando" está abierto
   bool _connectingDialogOpen = false;
+
+  // Catálogos para el guardado de pesajes
+  List<Cuadrilla> _cuadrillas = [];
+  List<Operario> _operarios = [];
+  int? _selectedCuadrillaId;
+  int? _selectedOperarioId;
+  int? _selectedBasculaId;
+  DatabaseService? _databaseService;
+
+  // Control para evitar mostrar múltiples veces el diálogo de báscula no registrada
+  bool _basculaDialogShown = false;
+
+  // Control para evitar buscar báscula múltiples veces por el mismo dispositivo
+  String? _lastDeviceMacSearched;
+
   @override
   void initState() {
     super.initState();
@@ -41,6 +57,178 @@ class _HomePageState extends State<HomePage> {
     context
         .read<conn.ConnectionBloc>()
         .add(conn.CheckAutoConnectionRequested());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _databaseService ??= DatabaseProvider.of(context);
+    // Cargar/recargar catálogos cuando DatabaseService esté disponible
+    if (_databaseService != null) {
+      _loadCatalogs();
+    }
+  }
+
+  Future<void> _loadCatalogs() async {
+    final db = _databaseService;
+    if (db == null) return;
+    try {
+      final cuadrillaRows = await db.getCuadrillas();
+      final operarioRows = await db.getOperarios();
+      setState(() {
+        _cuadrillas = cuadrillaRows.map((r) => Cuadrilla.fromMap(r)).toList()
+          ..sort((a, b) => a.nombre.compareTo(b.nombre));
+        _operarios = operarioRows.map((r) => Operario.fromMap(r)).toList()
+          ..sort((a, b) => a.nombreCompleto.compareTo(b.nombreCompleto));
+
+        // Validar que la cuadrilla seleccionada siga existiendo
+        if (_selectedCuadrillaId != null &&
+            !_cuadrillas.any((c) => c.idCuadrilla == _selectedCuadrillaId)) {
+          _selectedCuadrillaId = null;
+          _selectedOperarioId = null;
+        }
+
+        // Validar que el operario seleccionado siga existiendo
+        if (_selectedOperarioId != null &&
+            !_operarios.any((o) => o.idOperario == _selectedOperarioId)) {
+          _selectedOperarioId = null;
+        }
+
+        // Auto-seleccionar primera cuadrilla si no hay ninguna seleccionada
+        if (_cuadrillas.isNotEmpty && _selectedCuadrillaId == null) {
+          _selectedCuadrillaId = _cuadrillas.first.idCuadrilla;
+          _filterOperarios();
+        }
+        // NO auto-seleccionar báscula - solo se selecciona cuando se conecta por MAC
+      });
+    } catch (e) {
+      print('Error cargando catálogos: $e');
+    }
+  }
+
+  void _filterOperarios() {
+    // Solo mostrar operarios de la cuadrilla seleccionada
+    if (_selectedCuadrillaId == null) {
+      setState(() => _selectedOperarioId = null);
+      return;
+    }
+    final filtered =
+        _operarios.where((o) => o.idCuadrilla == _selectedCuadrillaId).toList();
+    setState(() {
+      _selectedOperarioId =
+          filtered.isNotEmpty ? filtered.first.idOperario : null;
+    });
+  }
+
+  /// Auto-seleccionar báscula basada en la MAC del dispositivo conectado
+  Future<void> _autoSelectBasculaByMac(
+      BuildContext context, conn.Connected state) async {
+    final db = _databaseService;
+    if (db == null) return;
+
+    try {
+      // Obtener la MAC del dispositivo conectado
+      final deviceMac = state.device.id;
+      if (deviceMac.isEmpty) {
+        print('⚠️  No hay MAC de dispositivo disponible');
+        return;
+      }
+
+      // Evitar buscar el mismo dispositivo múltiples veces
+      if (_lastDeviceMacSearched == deviceMac) {
+        print('ℹ️  Ya se buscó esta báscula anteriormente');
+        return;
+      }
+
+      _lastDeviceMacSearched = deviceMac;
+      print('🔍 Buscando báscula con MAC: $deviceMac');
+
+      // Buscar la báscula en la BD
+      final bascula = await db.getBasculaByMac(deviceMac);
+
+      if (bascula != null) {
+        // Báscula encontrada - auto-seleccionar
+        print('✅ Báscula encontrada: ${bascula.nombre}');
+        setState(() {
+          _selectedBasculaId = bascula.idBascula;
+          _basculaDialogShown = false; // Resetear el flag
+        });
+      } else {
+        // Báscula NO encontrada - NO auto-seleccionar
+        print('❌ Báscula NO registrada con MAC: $deviceMac');
+        // No mostrar mensaje aquí, dejamos que aparezca cuando intente guardar
+      }
+    } catch (e) {
+      print('Error auto-seleccionando báscula: $e');
+    }
+  }
+
+  /// Mostrar diálogo de advertencia cuando la báscula no está registrada
+  void _showBasculaNotRegisteredDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        icon: const Icon(
+          Icons.warning_amber_rounded,
+          color: Colors.orange,
+          size: 64,
+        ),
+        title: const Text(
+          'Báscula No Registrada',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'La báscula conectada no está registrada en el sistema.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'MAC: ${context.read<conn.ConnectionBloc>().state is conn.Connected ? (context.read<conn.ConnectionBloc>().state as conn.Connected).device.id : "Desconocido"}',
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Por favor, registre la báscula en la sección de Configuración antes de poder guardar pesajes.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('CANCELAR'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const ConfigurationPage(),
+                ),
+              );
+            },
+            icon: const Icon(Icons.settings),
+            label: const Text('IR A CONFIGURACIÓN'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -60,6 +248,14 @@ class _HomePageState extends State<HomePage> {
             barrierDismissible: false,
             builder: (context) => _buildConnectingDialog(state),
           );
+        } else if (state is conn.Connected) {
+          // Cerrar el diálogo si estaba abierto
+          if (_connectingDialogOpen) {
+            _connectingDialogOpen = false;
+            Navigator.of(context, rootNavigator: true).pop();
+          }
+          // Auto-seleccionar báscula basada en la MAC conectada
+          _autoSelectBasculaByMac(context, state);
         } else {
           // Cerrar el diálogo sólo si lo abrimos desde esta pantalla
           if (_connectingDialogOpen) {
@@ -213,7 +409,103 @@ class _HomePageState extends State<HomePage> {
 
                     const SizedBox(height: 16),
 
-                    // === Lista de dispositivos vinculados/emparejados únicamente ===
+                    // === Dropdowns de Cuadrilla, Operario y Bascula (Fila Horizontal) ===
+                    if (connectedState != null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.grey.shade400,
+                                    width: 1,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: DropdownButton<int>(
+                                  isExpanded: true,
+                                  isDense: false,
+                                  elevation: 8,
+                                  underline: const SizedBox(),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  hint: const Text('Cuadrilla'),
+                                  value: _selectedCuadrillaId,
+                                  dropdownColor: Colors.white,
+                                  items: _cuadrillas
+                                      .map((c) => DropdownMenuItem(
+                                            value: c.idCuadrilla,
+                                            child: Text(c.nombre),
+                                          ))
+                                      .toList(),
+                                  onChanged: (id) {
+                                    if (id != null) {
+                                      setState(() {
+                                        _selectedCuadrillaId = id;
+                                        _filterOperarios();
+                                      });
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                    color: Colors.grey.shade400,
+                                    width: 1,
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: DropdownButton<int>(
+                                  isExpanded: true,
+                                  isDense: false,
+                                  elevation: 8,
+                                  underline: const SizedBox(),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  hint: const Text('Operario'),
+                                  value: _selectedOperarioId,
+                                  dropdownColor: Colors.white,
+                                  items: _selectedCuadrillaId == null
+                                      ? []
+                                      : _operarios
+                                          .where((o) =>
+                                              o.idCuadrilla ==
+                                              _selectedCuadrillaId)
+                                          .map((o) => DropdownMenuItem(
+                                                value: o.idOperario,
+                                                child: Text(o.nombreCompleto),
+                                              ))
+                                          .toList(),
+                                  onChanged: (id) {
+                                    if (id != null) {
+                                      setState(() => _selectedOperarioId = id);
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            IconButton(
+                              tooltip: 'Actualizar catálogos',
+                              onPressed: _loadCatalogs,
+                              icon: const Icon(Icons.refresh),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    const SizedBox(height: 16),
+
                     // === Botones de acción horizontal: GUARDAR PESAJE ===
                     if (connectedState != null)
                       BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
@@ -222,26 +514,37 @@ class _HomePageState extends State<HomePage> {
                               connState is conn.Connected ? connState : null;
                           final isStable =
                               current?.weight?.status == WeightStatus.stable;
+                          final canSave = isStable &&
+                              _selectedCuadrillaId != null &&
+                              _selectedOperarioId != null;
 
                           return Row(
                             children: [
                               // 💾 Botón GUARDAR PESAJE
                               Expanded(
                                 child: FilledButton.icon(
-                                  onPressed: isStable
+                                  onPressed: canSave
                                       ? () => _saveWeighing(
                                           context, current ?? connectedState)
                                       : null,
                                   style: FilledButton.styleFrom(
                                     backgroundColor:
-                                        isStable ? Colors.blue : Colors.grey,
+                                        canSave ? Colors.blue : Colors.grey,
                                     foregroundColor: Colors.white,
                                     padding: const EdgeInsets.symmetric(
                                         vertical: 16),
                                   ),
                                   icon: const Icon(Icons.save, size: 20),
                                   label: Text(
-                                    isStable ? 'GUARDAR' : 'Esperando...',
+                                    !isStable
+                                        ? 'Esperando...'
+                                        : _selectedCuadrillaId == null
+                                            ? 'Selecciona cuadrilla'
+                                            : _selectedOperarioId == null
+                                                ? 'Selecciona operario'
+                                                : _selectedBasculaId == null
+                                                    ? 'Báscula no registrada'
+                                                    : 'GUARDAR',
                                     style: const TextStyle(fontSize: 14),
                                   ),
                                 ),
@@ -754,8 +1057,23 @@ class _HomePageState extends State<HomePage> {
   void _saveWeighing(BuildContext context, conn.Connected state) {
     final weight = state.weight;
     final weightKg = weight?.kg;
+    final cuadrillaId = _selectedCuadrillaId;
+    final operarioId = _selectedOperarioId;
+    final basculaId = _selectedBasculaId;
 
-    if (weightKg == null) return;
+    if (weightKg == null || cuadrillaId == null || operarioId == null) return;
+
+    // Verificar que la báscula esté registrada
+    if (basculaId == null) {
+      if (!_basculaDialogShown) {
+        _basculaDialogShown = true;
+        _showBasculaNotRegisteredDialog(context);
+      }
+      return;
+    }
+
+    // Reiniciar el flag cuando se guarde correctamente
+    _basculaDialogShown = false;
 
     // ✅ Mostrar confirmación INMEDIATA
     if (mounted) {
@@ -785,22 +1103,16 @@ class _HomePageState extends State<HomePage> {
         try {
           final databaseService = DatabaseProvider.of(context);
 
-          // Obtener siguiente número desde SQLite
-          final bunches = await databaseService.getAllBunchEntries(limit: 1);
-          final nextNumber =
-              bunches.isEmpty ? 1 : (bunches.first['number'] as int) + 1;
-
-          // Guardar en SQLite
-          final localId = await databaseService.addBunchEntry(
-            number: nextNumber,
-            weightKg: weightKg,
-            weighingTime: DateTime.now(),
-            cintaColor: '',
-            cuadrilla: '',
-            lote: '',
-            recusado: false,
+          // Guardar en SQLite (esquema normalizado)
+          final localId = await databaseService.insertPesaje(
+            idCuadrilla: cuadrillaId,
+            idOperario: operarioId,
+            idBascula: basculaId,
+            peso: weightKg,
+            fechaHora: DateTime.now(),
           );
-          print('✅ Racimo #$nextNumber guardado localmente (ID: $localId)');
+
+          print('✅ Pesaje guardado localmente (ID: $localId)');
         } catch (e) {
           print('❌ Error guardando pesaje: $e');
           if (mounted) {
@@ -820,7 +1132,7 @@ class _HomePageState extends State<HomePage> {
   void _showDeviceInfo(BuildContext context, conn.Connected state) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => const DeviceInfoPage(),
+        builder: (context) => DeviceInfoPage(basculaId: _selectedBasculaId),
       ),
     );
   }
