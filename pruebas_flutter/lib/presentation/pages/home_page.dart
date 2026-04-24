@@ -267,7 +267,7 @@ class _HomePageState extends State<HomePage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Básculas – Monitor'),
+          title: const Text('Módulo Pesaje'),
           actions: [
             // 🎯 Icono de estado de la báscula - DESACTIVADO
             /* BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(

@@ -91,8 +91,14 @@ class _WeightCardState extends State<WeightCard> {
                 // Header con título
                 Row(
                   children: [
-                    Text('Lectura de peso',
-                        style: Theme.of(context).textTheme.titleLarge),
+                    const Icon(Icons.monitor_weight, size: 24),
+                    const SizedBox(width: 12),
+                    Text(
+                      'Peso Actual',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -150,17 +156,6 @@ class _WeightCardState extends State<WeightCard> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                // Timestamp centrado
-                if (widget.weight?.at != null)
-                  Center(
-                    child: Text(
-                      'Última lectura: ${TimeOfDay.fromDateTime(widget.weight!.at).format(context)}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                  ),
               ],
             ),
           ),
