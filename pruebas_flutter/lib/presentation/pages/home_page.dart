@@ -11,6 +11,7 @@ import '../widgets/device_tile.dart';
 import '../widgets/weight_card.dart';
 import '../widgets/scan_devices_dialog.dart';
 import '../widgets/sqlite_widgets.dart';
+import '../widgets/bunch_colors.dart';
 import 'device_info_page.dart';
 import 'configuration_page.dart';
 import 'weighing_history_page.dart';
@@ -37,6 +38,15 @@ class _HomePageState extends State<HomePage> {
   int? _selectedCuadrillaId;
   int? _selectedOperarioId;
   int? _selectedBasculaId;
+  int? _activeTripId;
+  String? _selectedColorCinta;
+  bool _autoSaveEnabled = false;
+  bool _manualSaveEnabled = true;
+  double _minimumSaveWeight = 1.0;
+  double _unloadThreshold = 0.5;
+  bool _autoSavePaused = false;
+  bool _currentBunchSaved = false;
+  bool _savingInProgress = false;
   DatabaseService? _databaseService;
 
   // Control para evitar mostrar múltiples veces el diálogo de báscula no registrada
@@ -66,7 +76,53 @@ class _HomePageState extends State<HomePage> {
     // Cargar/recargar catálogos cuando DatabaseService esté disponible
     if (_databaseService != null) {
       _loadCatalogs();
+      _loadPreferredColor();
+      _loadSaveRules();
     }
+  }
+
+  Future<void> _loadPreferredColor() async {
+    final db = DatabaseProvider.of(context);
+    final saved = await db.getPreferredColor();
+    if (mounted) {
+      setState(() {
+        // Si no hay guardado, usar Blanco como default
+        _selectedColorCinta = saved ?? BunchColors.white;
+      });
+    }
+  }
+
+  Future<void> _loadSaveRules() async {
+    final db = DatabaseProvider.of(context);
+    final autoSaveEnabled = await db.getAutoSaveEnabled();
+    final manualSaveEnabled = await db.getManualSaveEnabled();
+    final minimumSaveWeight = await db.getMinimumSaveWeight();
+    final unloadThreshold = await db.getUnloadThreshold();
+
+    if (!mounted) return;
+    setState(() {
+      _autoSaveEnabled = autoSaveEnabled;
+      _manualSaveEnabled = manualSaveEnabled;
+      _minimumSaveWeight = minimumSaveWeight;
+      _unloadThreshold = unloadThreshold;
+    });
+  }
+
+  Future<void> _refreshActiveTrip() async {
+    var basculaId = _selectedBasculaId;
+    if (basculaId == null) {
+      if (mounted) {
+        setState(() => _activeTripId = null);
+      }
+      return;
+    }
+
+    final db = DatabaseProvider.of(context);
+    final viaje = await db.obtenerViajeActivoPorBascula(basculaId);
+    if (!mounted) return;
+    setState(() {
+      _activeTripId = viaje == null ? null : viaje['id_viaje'] as int?;
+    });
   }
 
   Future<void> _loadCatalogs() async {
@@ -106,6 +162,19 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _refreshCatalogsAndBascula() async {
+    await _loadCatalogs();
+    if (!mounted) return;
+
+    // Permite reintentar lookup de la MAC conectada después de cambios en catálogo.
+    _lastDeviceMacSearched = null;
+
+    final currentState = context.read<conn.ConnectionBloc>().state;
+    if (currentState is conn.Connected) {
+      await _autoSelectBasculaByMac(context, currentState);
+    }
+  }
+
   void _filterOperarios() {
     // Solo mostrar operarios de la cuadrilla seleccionada
     if (_selectedCuadrillaId == null) {
@@ -134,9 +203,10 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // Evitar buscar el mismo dispositivo múltiples veces
-      if (_lastDeviceMacSearched == deviceMac) {
-        print('ℹ️  Ya se buscó esta báscula anteriormente');
+      // Evitar consultas repetidas solo si ya hay una báscula seleccionada.
+      // Si no hay selección, permitir reintento (ej. después de registrarla en Configuración).
+      if (_lastDeviceMacSearched == deviceMac && _selectedBasculaId != null) {
+        print('ℹ️  Báscula ya seleccionada para esta MAC');
         return;
       }
 
@@ -153,6 +223,7 @@ class _HomePageState extends State<HomePage> {
           _selectedBasculaId = bascula.idBascula;
           _basculaDialogShown = false; // Resetear el flag
         });
+        unawaited(_refreshActiveTrip());
       } else {
         // Báscula NO encontrada - NO auto-seleccionar
         print('❌ Báscula NO registrada con MAC: $deviceMac');
@@ -269,33 +340,6 @@ class _HomePageState extends State<HomePage> {
         appBar: AppBar(
           title: const Text('Módulo Pesaje'),
           actions: [
-            // 🎯 Icono de estado de la báscula - DESACTIVADO
-            /* BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
-            builder: (context, connectionState) {
-              return Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: ScaleStatusIcon(
-                  isConnected: connectionState is conn.Connected,
-                  weight: connectionState is conn.Connected
-                      ? connectionState.weight
-                      : null,
-                  batteryVoltage: connectionState is conn.Connected
-                      ? connectionState.batteryVoltage
-                      : null,
-                  batteryPercent: connectionState is conn.Connected
-                      ? connectionState.batteryPercent
-                      : null,
-                  onTap: () {
-                    // Mostrar detalles rápidos o ir a pantalla de detalles
-                    if (connectionState is conn.Connected) {
-                      _showScaleDetails(context, connectionState);
-                    }
-                  },
-                ),
-              );
-            },
-          ), */
-            // Ícono de historial de pesajes
             IconButton(
               tooltip: 'Historial de Pesajes',
               onPressed: () {
@@ -356,6 +400,14 @@ class _HomePageState extends State<HomePage> {
         ),
         body: SafeArea(
           child: BlocConsumer<conn.ConnectionBloc, conn.ConnectionState>(
+            buildWhen: (prev, curr) {
+              // No reconstruir el layout por cambios de peso — WeightCard lo maneja solo
+              if (prev is conn.Connected && curr is conn.Connected) {
+                return prev.device.id != curr.device.id ||
+                    prev.weightUnit != curr.weightUnit;
+              }
+              return prev.runtimeType != curr.runtimeType;
+            },
             listener: (context, state) {
               if (state is conn.ConnectionError) {
                 ScaffoldMessenger.of(context)
@@ -365,6 +417,7 @@ class _HomePageState extends State<HomePage> {
               // Detener escaneo cuando se conecta exitosamente
               if (state is conn.Connected) {
                 context.read<ScanCubit>().stopScanning();
+                _handleAutoSave(state);
                 print('🛑 Escaneo detenido - dispositivo conectado');
               }
             },
@@ -378,13 +431,8 @@ class _HomePageState extends State<HomePage> {
                 child: Column(
                   children: [
                     // === Tarjeta de lectura de peso o mensaje vacío ===
-                    // El estado "connecting" ahora se muestra como un Dialog modal centrado
                     if (connectedState != null)
-                      WeightCard(
-                        weight: connectedState.weight,
-                        batteryVoltage: connectedState.batteryVoltage,
-                        batteryPercent: connectedState.batteryPercent,
-                      )
+                      const WeightCard()
                     else if (!connecting)
                       Card(
                         color: color.surfaceContainerHigh,
@@ -497,11 +545,28 @@ class _HomePageState extends State<HomePage> {
                             const SizedBox(width: 12),
                             IconButton(
                               tooltip: 'Actualizar catálogos',
-                              onPressed: _loadCatalogs,
+                              onPressed: () {
+                                unawaited(_refreshCatalogsAndBascula());
+                              },
                               icon: const Icon(Icons.refresh),
                             ),
                           ],
                         ),
+                      ),
+
+                    const SizedBox(height: 16),
+
+                    // === Selector de color de cinta ===
+                    if (connectedState != null)
+                      ColorPickerWidget(
+                        initialColor: _selectedColorCinta,
+                        onColorSelected: (color) {
+                          setState(() => _selectedColorCinta = color);
+                          unawaited(
+                            DatabaseProvider.of(context)
+                                .setPreferredColor(color),
+                          );
+                        },
                       ),
 
                     const SizedBox(height: 16),
@@ -514,41 +579,121 @@ class _HomePageState extends State<HomePage> {
                               connState is conn.Connected ? connState : null;
                           final isStable =
                               current?.weight?.status == WeightStatus.stable;
-                          final canSave = isStable &&
+                          final currentWeight = current?.weight?.kg ?? 0;
+                          final meetsMinimumWeight =
+                              currentWeight >= _minimumSaveWeight;
+                          final canSave = _manualSaveEnabled &&
+                              !_savingInProgress &&
+                              !_currentBunchSaved &&
+                              isStable &&
+                              meetsMinimumWeight &&
                               _selectedCuadrillaId != null &&
-                              _selectedOperarioId != null;
+                              _selectedOperarioId != null &&
+                              _selectedBasculaId != null;
 
                           return Row(
                             children: [
-                              // 💾 Botón GUARDAR PESAJE
-                              Expanded(
-                                child: FilledButton.icon(
-                                  onPressed: canSave
-                                      ? () => _saveWeighing(
-                                          context, current ?? connectedState)
-                                      : null,
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor:
-                                        canSave ? Colors.blue : Colors.grey,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(
-                                        vertical: 16),
-                                  ),
-                                  icon: const Icon(Icons.save, size: 20),
-                                  label: Text(
-                                    !isStable
-                                        ? 'Esperando...'
-                                        : _selectedCuadrillaId == null
-                                            ? 'Selecciona cuadrilla'
-                                            : _selectedOperarioId == null
-                                                ? 'Selecciona operario'
-                                                : _selectedBasculaId == null
-                                                    ? 'Báscula no registrada'
-                                                    : 'GUARDAR',
-                                    style: const TextStyle(fontSize: 14),
+                              if (_autoSaveEnabled) ...[
+                                Expanded(
+                                  child: FilledButton.icon(
+                                    onPressed: _savingInProgress
+                                        ? null
+                                        : () => setState(
+                                              () => _autoSavePaused =
+                                                  !_autoSavePaused,
+                                            ),
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: _autoSavePaused
+                                          ? Colors.green
+                                          : Colors.orange,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                    ),
+                                    icon: Icon(
+                                      _autoSavePaused
+                                          ? Icons.play_arrow
+                                          : Icons.pause,
+                                      size: 20,
+                                    ),
+                                    label: Text(
+                                      _autoSavePaused
+                                          ? 'Reanudar operación'
+                                          : 'Pausar operación',
+                                      style: const TextStyle(fontSize: 14),
+                                    ),
                                   ),
                                 ),
-                              ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed:
+                                        _savingInProgress ? null : _closeActiveTrip,
+                                    style: OutlinedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.flag_outlined),
+                                    label: const Text('Finalizar viaje'),
+                                  ),
+                                ),
+                              ] else ...[
+                                Expanded(
+                                  child: FilledButton.icon(
+                                    onPressed: canSave
+                                        ? () => _saveWeighing(
+                                            context, current ?? connectedState)
+                                        : null,
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor:
+                                          canSave ? Colors.blue : Colors.grey,
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 16),
+                                    ),
+                                    icon: const Icon(Icons.save, size: 20),
+                                    label: Text(
+                                      !isStable
+                                          ? 'Esperando...'
+                                          : !_manualSaveEnabled
+                                              ? 'Guardado manual desactivado'
+                                              : _savingInProgress
+                                                  ? 'Guardando...'
+                                                  : _currentBunchSaved
+                                                      ? 'Descargue para nuevo guardado'
+                                                      : !meetsMinimumWeight
+                                                          ? 'Mínimo ${_minimumSaveWeight.toStringAsFixed(2)}'
+                                                          : _selectedCuadrillaId ==
+                                                                  null
+                                                              ? 'Selecciona cuadrilla'
+                                                              : _selectedOperarioId ==
+                                                                      null
+                                                                  ? 'Selecciona operario'
+                                                                  : _selectedBasculaId ==
+                                                                          null
+                                                                      ? 'Báscula no registrada'
+                                                                      : 'GUARDAR',
+                                      style: const TextStyle(fontSize: 14),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed:
+                                        _savingInProgress ? null : _closeActiveTrip,
+                                    style: OutlinedButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 16,
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.flag_outlined),
+                                    label: const Text('Finalizar viaje'),
+                                  ),
+                                ),
+                              ],
                             ],
                           );
                         },
@@ -584,7 +729,9 @@ class _HomePageState extends State<HomePage> {
                                     const Icon(Icons.history, size: 20),
                                     const SizedBox(width: 8),
                                     Text(
-                                      'Últimos pesajes',
+                                      _activeTripId == null
+                                          ? 'Últimos pesajes (sin viaje activo)'
+                                          : 'Últimos pesajes del viaje',
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleMedium,
@@ -605,12 +752,22 @@ class _HomePageState extends State<HomePage> {
                                 ),
                               ),
                               const SizedBox(height: 8),
-                              SizedBox(
-                                height: 280,
-                                child: BunchHistoryWidget(
-                                  limit: 5,
+                              if (_activeTripId == null)
+                                const Padding(
+                                  padding: EdgeInsets.all(12.0),
+                                  child: Text(
+                                    'No hay viaje activo para mostrar pesajes.',
+                                    textAlign: TextAlign.center,
+                                  ),
+                                )
+                              else
+                                SizedBox(
+                                  height: 200,
+                                  child: BunchHistoryWidget(
+                                    limit: 5,
+                                    filters: BunchFilters(idViaje: _activeTripId),
+                                  ),
                                 ),
-                              ),
                             ],
                           );
                         },
@@ -944,124 +1101,137 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// 📊 Mostrar detalles rápidos de la báscula - DESACTIVADO
-  /* void _showScaleDetails(BuildContext context, conn.Connected state) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            const Icon(Icons.scale, color: Colors.green),
-            const SizedBox(width: 8),
-            Text('${state.device.name}'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 📊 Información del peso
-            if (state.weight != null) ...[
-              _buildDetailRow(
-                icon: Icons.monitor_weight,
-                label: 'Peso',
-                value: '${state.weight!.kg?.toStringAsFixed(1) ?? 'N/A'} kg',
-                status: state.weight!.status,
-              ),
-              const SizedBox(height: 8),
-            ],
+  void _handleAutoSave(conn.Connected state) {
+    final weightKg = state.weight?.kg ?? 0;
 
-            // 🔋 Información de batería
-            if (state.batteryPercent != null) ...[
-              _buildDetailRow(
-                icon: Icons.battery_full,
-                label: 'Batería',
-                value:
-                    '${state.batteryPercent!.percent?.toStringAsFixed(0) ?? 'N/A'}%',
-              ),
-              const SizedBox(height: 8),
-            ],
-
-            if (state.batteryVoltage != null) ...[
-              _buildDetailRow(
-                icon: Icons.electrical_services,
-                label: 'Voltaje',
-                value:
-                    '${state.batteryVoltage!.volts?.toStringAsFixed(2) ?? 'N/A'} V',
-              ),
-              const SizedBox(height: 8),
-            ],
-
-            // 📱 Información de conexión
-            _buildDetailRow(
-              icon: Icons.bluetooth_connected,
-              label: 'Estado',
-              value: 'Conectado',
-              status: WeightStatus.stable,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cerrar'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 📋 Construir fila de detalle
-  Widget _buildDetailRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    WeightStatus? status,
-  }) {
-    Color statusColor = Colors.green;
-    if (status != null) {
-      switch (status) {
-        case WeightStatus.stable:
-          statusColor = Colors.green;
-          break;
-        case WeightStatus.unstable:
-          statusColor = Colors.orange;
-          break;
-        case WeightStatus.negative:
-          statusColor = Colors.red;
-          break;
-      }
+    if (_currentBunchSaved && weightKg < _unloadThreshold) {
+      setState(() {
+        _currentBunchSaved = false;
+      });
+      return;
     }
 
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: statusColor),
-        const SizedBox(width: 8),
-        Text(
-          '$label:',
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        const Spacer(),
-        Text(
-          value,
-          style: TextStyle(
-            color: statusColor,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      ],
-    );
-  } */
+    final isStable = state.weight?.status == WeightStatus.stable;
+    final hasMinimumWeight = weightKg >= _minimumSaveWeight;
+    final hasRequiredData = _selectedCuadrillaId != null &&
+        _selectedOperarioId != null &&
+        _selectedBasculaId != null;
 
-  /// 💾 Guardar pesaje en Firebase (optimizado - sin bloqueo)
-  void _saveWeighing(BuildContext context, conn.Connected state) {
+    if (_autoSaveEnabled &&
+        !_autoSavePaused &&
+        !_savingInProgress &&
+        !_currentBunchSaved &&
+        isStable &&
+        hasMinimumWeight &&
+        hasRequiredData) {
+      unawaited(_saveWeighing(context, state, isAutoSave: true));
+    }
+  }
+
+  Future<void> _closeActiveTrip() async {
+    var basculaId = _selectedBasculaId;
+    if (basculaId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ No hay báscula seleccionada para cerrar viaje.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      final db = DatabaseProvider.of(context);
+      final viaje = await db.obtenerViajeActivoPorBascula(basculaId);
+      if (viaje == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('ℹ️ No hay viaje activo en esta báscula.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      final idViaje = viaje['id_viaje'] as int;
+      await db.finalizarViajePesaje(idViaje: idViaje);
+      if (mounted) {
+        setState(() {
+          _currentBunchSaved = false;
+          _activeTripId = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Viaje finalizado correctamente.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Error al finalizar viaje: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  /// 💾 Guardar pesaje local
+  Future<bool> _saveWeighing(
+    BuildContext context,
+    conn.Connected state, {
+    bool isAutoSave = false,
+  }) async {
+    if (_savingInProgress) return false;
+    _savingInProgress = true;
+
     final weight = state.weight;
     final weightKg = weight?.kg;
+    final weightUnit = (state.weightUnit == 'lb') ? 'lb' : 'kg';
     final cuadrillaId = _selectedCuadrillaId;
     final operarioId = _selectedOperarioId;
-    final basculaId = _selectedBasculaId;
+    var basculaId = _selectedBasculaId;
+    final colorCinta = _selectedColorCinta;
 
-    if (weightKg == null || cuadrillaId == null || operarioId == null) return;
+    if (weightKg == null || cuadrillaId == null || operarioId == null) {
+      _savingInProgress = false;
+      return false;
+    }
+
+    if (_currentBunchSaved) {
+      _savingInProgress = false;
+      return false;
+    }
+
+    if (weightKg < _minimumSaveWeight) {
+      _savingInProgress = false;
+      return false;
+    }
+
+    if (weightKg <= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ El peso debe ser mayor a 0 para guardar.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      _savingInProgress = false;
+      return false;
+    }
+
+    // Reintentar autoselección por MAC antes de bloquear el guardado.
+    if (basculaId == null) {
+      await _autoSelectBasculaByMac(context, state);
+      basculaId = _selectedBasculaId;
+    }
 
     // Verificar que la báscula esté registrada
     if (basculaId == null) {
@@ -1069,7 +1239,8 @@ class _HomePageState extends State<HomePage> {
         _basculaDialogShown = true;
         _showBasculaNotRegisteredDialog(context);
       }
-      return;
+      _savingInProgress = false;
+      return false;
     }
 
     // Reiniciar el flag cuando se guarde correctamente
@@ -1085,7 +1256,7 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '✅ Guardando: ${weightKg.toStringAsFixed(2)} kg',
+                  '${isAutoSave ? '✅ Auto guardando' : '✅ Guardando'}: ${weightKg.toStringAsFixed(2)} $weightUnit',
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
@@ -1097,35 +1268,60 @@ class _HomePageState extends State<HomePage> {
       );
     }
 
-    // 🔄 Guardar en background sin bloquear la UI
-    unawaited(
-      Future.microtask(() async {
-        try {
-          final databaseService = DatabaseProvider.of(context);
+    try {
+      final databaseService = DatabaseProvider.of(context);
 
-          // Guardar en SQLite (esquema normalizado)
-          final localId = await databaseService.insertPesaje(
-            idCuadrilla: cuadrillaId,
-            idOperario: operarioId,
-            idBascula: basculaId,
-            peso: weightKg,
-            fechaHora: DateTime.now(),
-          );
+      final viajeActivo =
+          await databaseService.obtenerViajeActivoPorBascula(basculaId);
+      if (viajeActivo == null) {
+        await databaseService.crearViajePesaje(
+          idCuadrilla: cuadrillaId,
+          idBascula: basculaId,
+          colorCinta: colorCinta ?? 'sin color',
+          lote: 'sin lote',
+          observacion: 'creado_desde_modulo_pesaje',
+        );
+      }
 
-          print('✅ Pesaje guardado localmente (ID: $localId)');
-        } catch (e) {
-          print('❌ Error guardando pesaje: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('❌ Error al guardar: $e'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-        }
-      }),
-    );
+      final viajeActualizado =
+          await databaseService.obtenerViajeActivoPorBascula(basculaId);
+      if (mounted) {
+        setState(() {
+          _activeTripId = viajeActualizado?['id_viaje'] as int?;
+        });
+      }
+
+      final localId = await databaseService.insertPesaje(
+        idCuadrilla: cuadrillaId,
+        idOperario: operarioId,
+        idBascula: basculaId,
+        peso: weightKg,
+        unidad: weightUnit,
+        fechaHora: DateTime.now(),
+        colorCinta: colorCinta,
+      );
+
+      if (mounted) {
+        setState(() {
+          _currentBunchSaved = true;
+        });
+      }
+      print('✅ Pesaje guardado localmente (ID: $localId)');
+      return true;
+    } catch (e) {
+      print('❌ Error guardando pesaje: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Error al guardar: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return false;
+    } finally {
+      _savingInProgress = false;
+    }
   }
 
   /// 📋 Navegar a la página de información del dispositivo
@@ -1143,7 +1339,16 @@ class _HomePageState extends State<HomePage> {
       MaterialPageRoute(
         builder: (context) => const ConfigurationPage(),
       ),
-    );
+    ).then((_) {
+      if (!mounted) return;
+      _lastDeviceMacSearched = null;
+      unawaited(_loadCatalogs());
+      final currentState = context.read<conn.ConnectionBloc>().state;
+      if (currentState is conn.Connected) {
+        unawaited(_autoSelectBasculaByMac(context, currentState));
+      }
+      unawaited(_loadSaveRules());
+    });
   }
 
   void _showScanDialog() {

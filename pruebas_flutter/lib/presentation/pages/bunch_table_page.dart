@@ -55,11 +55,138 @@ class _BunchTablePageState extends State<BunchTablePage> {
           _connectionBloc.add(conn.StartPolling());
         }
       },
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Tabla de Racimos'),
+      child: DefaultTabController(
+        length: 2,
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('Pesajes'),
+            bottom: const TabBar(
+              tabs: [
+                Tab(text: 'Viajes del día'),
+                Tab(text: 'Tabla de pesajes'),
+              ],
+            ),
+          ),
+          body: TabBarView(
+            children: [
+              const _TripsByDayList(),
+              _BunchEntriesList(tableId: widget.tableId),
+            ],
+          ),
         ),
-        body: _BunchEntriesList(tableId: widget.tableId),
+      ),
+    );
+  }
+}
+
+class _TripsByDayList extends StatelessWidget {
+  const _TripsByDayList();
+
+  @override
+  Widget build(BuildContext context) {
+    final db = DatabaseProvider.of(context);
+    final now = DateTime.now();
+
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: db.streamViajesDelDia(day: now),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
+        }
+
+        final viajes = snapshot.data ?? [];
+        if (viajes.isEmpty) {
+          return const Center(
+            child: Text('No hay viajes registrados para hoy.'),
+          );
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.all(12),
+          itemCount: viajes.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 8),
+          itemBuilder: (context, index) {
+            final v = viajes[index];
+            final idViaje = v['id_viaje'] as int;
+            final estado = (v['estado'] ?? '').toString();
+            final totalPesajes = (v['total_pesajes'] as num?)?.toInt() ?? 0;
+            final inicio = formatWeighingTime(v['fecha_inicio']);
+            final fin = v['fecha_fin'] == null
+                ? 'Abierto'
+                : formatWeighingTime(v['fecha_fin']);
+
+            return Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Viaje #$idViaje • ${v['cuadrilla_nombre'] ?? 'Sin cuadrilla'}',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Báscula: ${v['bascula_nombre'] ?? 'N/A'} • Estado: $estado • Racimos: $totalPesajes',
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Inicio: $inicio • Fin: $fin',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => _TripPesajesPage(
+                                idViaje: idViaje,
+                                title:
+                                    'Viaje #$idViaje • ${v['cuadrilla_nombre'] ?? 'Sin cuadrilla'}',
+                              ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.table_rows),
+                        label: const Text('Abrir viaje'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _TripPesajesPage extends StatelessWidget {
+  final int idViaje;
+  final String title;
+
+  const _TripPesajesPage({
+    required this.idViaje,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+      ),
+      body: _BunchEntriesList(
+        tableId: 'local',
+        idViaje: idViaje,
       ),
     );
   }
@@ -67,7 +194,9 @@ class _BunchTablePageState extends State<BunchTablePage> {
 
 class _BunchEntriesList extends StatefulWidget {
   final String tableId;
-  const _BunchEntriesList({required this.tableId});
+  final int? idViaje;
+
+  const _BunchEntriesList({required this.tableId, this.idViaje});
 
   @override
   State<_BunchEntriesList> createState() => _BunchEntriesListState();
@@ -90,110 +219,181 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
   int _syncedFilter = 0; // 0: todos, 1: solo sincronizados, 2: pendientes
   bool _showAdvancedFilters = false; // ocultar avanzados por defecto
 
+  String _normalizeText(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('ñ', 'n')
+        .trim();
+  }
+
+  List<String> _buildColorOptions(List<Map<String, dynamic>> source) {
+    final map = <String, String>{};
+    for (final d in source) {
+      final raw = (d['cintaColor'] ?? '').toString().trim();
+      if (raw.isEmpty) continue;
+      final name = BunchColors.getColorName(raw).trim();
+      final display = name.isEmpty ? raw : name;
+      map[_normalizeText(display)] = display;
+    }
+    final result = map.values.toList()..sort((a, b) => a.compareTo(b));
+    return result;
+  }
+
+  bool _hasActiveFilters() {
+    final hasAdvanced =
+        _minWeightCtrl.text.trim().isNotEmpty ||
+            _maxWeightCtrl.text.trim().isNotEmpty ||
+            _colorCtrl.text.trim().isNotEmpty ||
+            _cuadrillaCtrl.text.trim().isNotEmpty ||
+            _loteCtrl.text.trim().isNotEmpty ||
+            _recusadoFilter != 0 ||
+            _syncedFilter != 0;
+
+    final now = DateTime.now();
+    final startOfToday = DateTime(now.year, now.month, now.day);
+    final defaultStart = startOfToday.subtract(const Duration(days: 1));
+    final defaultEnd =
+        startOfToday.add(const Duration(hours: 23, minutes: 59, seconds: 59));
+
+    final hasDateFilter =
+        _startDate == null ||
+            _endDate == null ||
+            !_startDate!.isAtSameMomentAs(defaultStart) ||
+            !_endDate!.isAtSameMomentAs(defaultEnd);
+
+    return hasAdvanced || hasDateFilter;
+  }
+
   void _openFiltersSheet() {
     setState(() => _showAdvancedFilters = false);
+    var showAdvanced = _showAdvancedFilters;
+    final colors = List<String>.from(_lastColors);
+    final cuadrillas = List<String>.from(_lastCuadrillas);
+    final lotes = List<String>.from(_lastLotes);
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (ctx) {
+        void refreshSheet(StateSetter sheetSetState) {
+          setState(() {});
+          sheetSetState(() {});
+        }
+
         String _fmt(DateTime? dt) {
           if (dt == null) return '—';
           return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
         }
 
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 12,
-            left: 12,
-            right: 12,
-            top: 12,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('Filtros',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    ElevatedButton.icon(
-                      icon: const Icon(Icons.calendar_view_week),
-                      label: const Text('Ayer'),
-                      onPressed: () {
-                        _setYesterdayRange();
-                        setState(() {});
-                      },
-                    ),
-                    ElevatedButton.icon(
-                      icon: const Icon(Icons.today),
-                      label: const Text('Hoy'),
-                      onPressed: () {
-                        _setTodayRange();
-                        setState(() {});
-                      },
-                    ),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.date_range),
-                      label: const Text('Desde - hasta'),
-                      onPressed: () async {
-                        await _pickDate(isStart: true);
-                        await _pickDate(isStart: false);
-                        setState(() {});
-                      },
-                    ),
-                    Text('Desde: ${_fmt(_startDate)}',
-                        style: const TextStyle(fontSize: 12)),
-                    Text('Hasta: ${_fmt(_endDate)}',
-                        style: const TextStyle(fontSize: 12)),
-                    IconButton(
-                      tooltip: 'Reiniciar a ayer y hoy',
-                      icon: const Icon(Icons.refresh),
-                      onPressed: () {
-                        _setDefaultDateRange();
-                        setState(() {});
-                      },
-                    ),
-                  ],
-                ),
-                const Divider(height: 24),
-                TextButton.icon(
-                  onPressed: () => setState(
-                      () => _showAdvancedFilters = !_showAdvancedFilters),
-                  icon: Icon(
-                    _showAdvancedFilters ? Icons.expand_less : Icons.tune,
+        return StatefulBuilder(
+          builder: (context, sheetSetState) => Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 12,
+              left: 12,
+              right: 12,
+              top: 12,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Filtros',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.calendar_view_week),
+                        label: const Text('Ayer'),
+                        onPressed: () {
+                          _setYesterdayRange();
+                          refreshSheet(sheetSetState);
+                        },
+                      ),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.today),
+                        label: const Text('Hoy'),
+                        onPressed: () {
+                          _setTodayRange();
+                          refreshSheet(sheetSetState);
+                        },
+                      ),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.date_range),
+                        label: const Text('Desde - hasta'),
+                        onPressed: () async {
+                          await _pickDate(isStart: true);
+                          await _pickDate(isStart: false);
+                          refreshSheet(sheetSetState);
+                        },
+                      ),
+                      Text('Desde: ${_fmt(_startDate)}',
+                          style: const TextStyle(fontSize: 12)),
+                      Text('Hasta: ${_fmt(_endDate)}',
+                          style: const TextStyle(fontSize: 12)),
+                      IconButton(
+                        tooltip: 'Reiniciar a ayer y hoy',
+                        icon: const Icon(Icons.refresh),
+                        onPressed: () {
+                          _setDefaultDateRange();
+                          refreshSheet(sheetSetState);
+                        },
+                      ),
+                    ],
                   ),
-                  label: Text(_showAdvancedFilters
-                      ? 'Ocultar filtros avanzados'
-                      : 'Filtros avanzados'),
-                ),
-                if (_showAdvancedFilters)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8, bottom: 16),
-                    child: _AdvancedFiltersCard(
-                      minWeightCtrl: _minWeightCtrl,
-                      maxWeightCtrl: _maxWeightCtrl,
-                      colorCtrl: _colorCtrl,
-                      cuadrillaCtrl: _cuadrillaCtrl,
-                      loteCtrl: _loteCtrl,
-                      availableColors: _lastColors,
-                      availableCuadrillas: _lastCuadrillas,
-                      availableLotes: _lastLotes,
-                      recusadoFilter: _recusadoFilter,
-                      syncedFilter: _syncedFilter,
-                      onFilterChanged: () => setState(() {}),
-                      onRecusadoChange: (v) =>
-                          setState(() => _recusadoFilter = v),
-                      onSyncedChange: (v) => setState(() => _syncedFilter = v),
-                      onReset: _resetFilters,
-                    ),
+                  const Divider(height: 24),
+                  TextButton.icon(
+                    onPressed: () {
+                      showAdvanced = !showAdvanced;
+                      _showAdvancedFilters = showAdvanced;
+                      sheetSetState(() {});
+                    },
+                    icon: Icon(showAdvanced ? Icons.expand_less : Icons.tune),
+                    label: Text(showAdvanced
+                        ? 'Ocultar filtros avanzados'
+                        : 'Filtros avanzados'),
                   ),
-              ],
+                  if (showAdvanced)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 16),
+                      child: _AdvancedFiltersCard(
+                        minWeightCtrl: _minWeightCtrl,
+                        maxWeightCtrl: _maxWeightCtrl,
+                        colorCtrl: _colorCtrl,
+                        cuadrillaCtrl: _cuadrillaCtrl,
+                        loteCtrl: _loteCtrl,
+                        availableColors: colors,
+                        availableCuadrillas: cuadrillas,
+                        availableLotes: lotes,
+                        recusadoFilter: _recusadoFilter,
+                        syncedFilter: _syncedFilter,
+                        onFilterChanged: () => refreshSheet(sheetSetState),
+                        onRecusadoChange: (v) {
+                          _recusadoFilter = v;
+                          refreshSheet(sheetSetState);
+                        },
+                        onSyncedChange: (v) {
+                          _syncedFilter = v;
+                          refreshSheet(sheetSetState);
+                        },
+                        onReset: () {
+                          _resetFilters();
+                          refreshSheet(sheetSetState);
+                        },
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         );
@@ -282,7 +482,7 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
   List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> docs) {
     final minW = double.tryParse(_minWeightCtrl.text.trim());
     final maxW = double.tryParse(_maxWeightCtrl.text.trim());
-    final colorInput = _colorCtrl.text.trim().toLowerCase();
+    final colorInput = _normalizeText(_colorCtrl.text.trim());
     String? colorCode = colorInput;
     String? colorName;
     if (colorInput.contains('-')) {
@@ -291,13 +491,20 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
       colorName = parts.skip(1).join('-').trim();
     }
     if ((colorName == null || colorName.isEmpty) && colorCode.isNotEmpty) {
-      colorName = BunchColors.getColorName(colorCode).toLowerCase();
+      colorName = _normalizeText(BunchColors.getColorName(colorCode));
     }
 
     final cuadrilla = _cuadrillaCtrl.text.trim().toLowerCase();
     final lote = _loteCtrl.text.trim().toLowerCase();
 
     return docs.where((d) {
+      if (widget.idViaje != null) {
+        final idViajeActual = d['idViaje'];
+        if (idViajeActual != widget.idViaje) {
+          return false;
+        }
+      }
+
       final rawWeight = d['weightKg'];
       final weight = rawWeight is num
           ? rawWeight.toDouble()
@@ -305,9 +512,9 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
       if (minW != null && weight < minW) return false;
       if (maxW != null && weight > maxW) return false;
 
-      final cColor = (d['cintaColor'] ?? '').toString().toLowerCase();
-      final cColorName =
-          BunchColors.getColorName(d['cintaColor']?.toString()).toLowerCase();
+        final cColor = _normalizeText((d['cintaColor'] ?? '').toString());
+        final cColorName = _normalizeText(
+          BunchColors.getColorName(d['cintaColor']?.toString()));
       if (colorInput.isNotEmpty) {
         final matchesCode = colorCode != null &&
             colorCode.isNotEmpty &&
@@ -364,7 +571,7 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
         '🔍 BunchTablePage: Construyendo lista con tableId: ${widget.tableId}');
 
     return StreamBuilder(
-      stream: databaseService.streamBunchEntries(limit: 1000),
+      stream: databaseService.streamBunchEntries(limit: 5000),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting &&
             !snapshot.hasData) {
@@ -388,19 +595,18 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
         final filteredDocs = _applyFilters(docs);
 
         // Valores únicos para autocompletar filtros
-        final colors = docs
-            .map((d) => (d['cintaColor'] ?? '').toString().trim())
-            .where((v) => v.isNotEmpty)
-            .toSet()
-            .toList()
-          ..sort((a, b) => a.compareTo(b));
-        final cuadrillas = docs
+        final filterSource = widget.idViaje == null
+            ? docs
+            : docs.where((d) => d['idViaje'] == widget.idViaje).toList();
+
+        final colors = _buildColorOptions(filterSource);
+        final cuadrillas = filterSource
             .map((d) => (d['cuadrilla'] ?? '').toString().trim())
             .where((v) => v.isNotEmpty)
             .toSet()
             .toList()
           ..sort((a, b) => a.compareTo(b));
-        final lotes = docs
+        final lotes = filterSource
             .map((d) => (d['lote'] ?? '').toString().trim())
             .where((v) => v.isNotEmpty)
             .toSet()
@@ -411,14 +617,28 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
         _lastCuadrillas = cuadrillas;
         _lastLotes = lotes;
 
+        final hasFiltersApplied = _hasActiveFilters();
+
         Widget filtersButton = Align(
           alignment: Alignment.centerRight,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: ElevatedButton.icon(
               onPressed: () => _openFiltersSheet(),
-              icon: const Icon(Icons.filter_alt),
-              label: const Text('Filtros'),
+              style: hasFiltersApplied
+                  ? ElevatedButton.styleFrom(
+                      backgroundColor: Colors.amber.shade100,
+                      foregroundColor: Colors.black87,
+                    )
+                  : null,
+              icon: Icon(
+                hasFiltersApplied ? Icons.filter_alt : Icons.filter_alt_outlined,
+                color: hasFiltersApplied
+                    ? Colors.amber.shade800
+                    : null,
+              ),
+              label:
+                  Text(hasFiltersApplied ? 'Filtros activos' : 'Filtros'),
             ),
           ),
         );
@@ -462,8 +682,13 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                   final entryId = d['id'].toString();
                   final number = d['number'] ?? index + 1;
                   final weightKg = (d['weightKg'] ?? 0).toDouble();
+                  final unit = ((d['unidad'] ?? 'kg') as String).toLowerCase() ==
+                          'lb'
+                      ? 'lb'
+                      : 'kg';
                   final weighingTime = d['weighingTime'];
                   final cintaColor = d['cintaColor'] as String?;
+                  final idViaje = d['idViaje'];
                   final cuadrilla = d['cuadrilla'] as String?;
                   final lote = d['lote'] as String?;
                   final recusado = (d['recusado'] == 1);
@@ -481,7 +706,7 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                                   style: const TextStyle(
                                       fontWeight: FontWeight.bold)),
                               const SizedBox(width: 12),
-                              Text('Peso: ${weightKg.toStringAsFixed(2)} kg'),
+                              Text('Peso: ${weightKg.toStringAsFixed(2)} $unit'),
                               const Spacer(),
                               Text(
                                 formatWeighingTime(weighingTime),
@@ -490,6 +715,17 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                               ),
                             ],
                           ),
+                          if (idViaje != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'Viaje #$idViaje',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 12),
                           _EditableFieldsRow(
                             key: ValueKey(
@@ -576,7 +812,7 @@ class _AdvancedFiltersCard extends StatelessWidget {
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(
-                      labelText: 'Peso mínimo (kg)',
+                      labelText: 'Peso mínimo',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -590,25 +826,41 @@ class _AdvancedFiltersCard extends StatelessWidget {
                     keyboardType:
                         const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(
-                      labelText: 'Peso máximo (kg)',
+                      labelText: 'Peso máximo',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
                     onChanged: (_) => onFilterChanged(),
                   ),
                 ),
-                _AutocompleteField(
-                  label: 'Color cinta',
-                  controller: colorCtrl,
-                  options: availableColors,
-                  optionLabelBuilder: (value) {
-                    if (value.isEmpty) return value;
-                    final name = BunchColors.getColorName(value);
-                    return name.toLowerCase() == value.toLowerCase()
-                        ? value
-                        : '$value - $name';
-                  },
-                  onChanged: onFilterChanged,
+                SizedBox(
+                  width: 220,
+                  child: DropdownButtonFormField<String>(
+                    value: colorCtrl.text.trim().isEmpty
+                        ? ''
+                        : (availableColors.any((c) => c.toLowerCase() ==
+                                colorCtrl.text.trim().toLowerCase())
+                            ? colorCtrl.text.trim()
+                            : ''),
+                    items: ['Todos', ...availableColors]
+                        .map(
+                          (c) => DropdownMenuItem<String>(
+                            value: c == 'Todos' ? '' : c,
+                            child: Text(c),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      colorCtrl.text = value ?? '';
+                      onFilterChanged();
+                    },
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Color cinta',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
                 ),
                 _AutocompleteField(
                   label: 'Cuadrilla',
@@ -727,7 +979,7 @@ class _AutocompleteField extends StatelessWidget {
       width: 150,
       child: Autocomplete<String>(
         optionsBuilder: (TextEditingValue textEditingValue) {
-          final query = textEditingValue.text.toLowerCase();
+          final query = textEditingValue.text.trim().toLowerCase();
           return options.where((option) {
             final label = labelBuilder(option).toLowerCase();
             return label.contains(query);
@@ -785,6 +1037,19 @@ class _AutocompleteField extends StatelessWidget {
               border: const OutlineInputBorder(),
               isDense: true,
             ),
+            onTap: () {
+              // Fuerza a RawAutocomplete a recalcular opciones al enfocar,
+              // mostrando sugerencias aunque el usuario no haya escrito aún.
+              final current = textEditingController.text;
+              textEditingController.value = TextEditingValue(
+                text: '$current ',
+                selection: TextSelection.collapsed(offset: current.length + 1),
+              );
+              textEditingController.value = TextEditingValue(
+                text: current,
+                selection: TextSelection.collapsed(offset: current.length),
+              );
+            },
             onChanged: (value) {
               controller.text = value;
               onChanged();

@@ -26,17 +26,18 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
   static const _trackingGap = Duration(milliseconds: 0);
   String? _pendingWeightFragment;
 
-  // Timeout de inicialización (ZA1 / SPWU)
+  // Timeout de inicialización (ZA1 / MSWU) - reducido para respuesta rápida
   Timer? _initTimeoutTimer;
-  static const _initTimeout = Duration(milliseconds: 2000);
+  static const _initTimeout = Duration(milliseconds: 1000);
   String? _lastInitCommand;
 
-  // Seguimiento de inicialización (ZA1, SPWU, y cambios de unidad)
+  // Seguimiento de inicialización (ZA1, MSWU, y cambios de unidad)
   int _initializationStep = 0;
   // 0: ninguno
   // 1: esperando respuesta ZA1
-  // 2: esperando respuesta SPWU (consulta unidad inicial)
+  // 2: esperando respuesta MSWU (consulta unidad inicial)
   // 3: esperando confirmación de cambio de unidad (sin timeout)
+  bool _initializationCompleted = false; // Trackea si ya se completó al menos una vez
 
   // 🚦 FLAG DE SUSPENSIÓN DE POLLING DE PESO
   // Cuando true: no se envían comandos de peso ni se procesan lecturas
@@ -69,17 +70,15 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     emit(ConnectionState.connecting(device: e.device));
     await _sub?.cancel();
     _pollTimer?.cancel();
+    _initializationCompleted = false; // Nueva conexión, resetear inicialización
 
     try {
       await repo.connect(e.device.id);
 
-      // Verificar conexión
+      // Verificar conexión (máximo 1 intento de 100ms)
       bool connected = false;
-      for (int i = 0; i < 2; i++) {
-        await Future.delayed(const Duration(milliseconds: 200));
-        connected = await repo.isConnected();
-        if (connected) break;
-      }
+      await Future.delayed(const Duration(milliseconds: 100));
+      connected = await repo.isConnected();
 
       if (connected) {
         _sub = repo.rawStream().listen((line) {
@@ -135,6 +134,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     // 🚀 Resetear estado de polling
     _pollingSuspended = false;
     _initializationStep = 0;
+    _initializationCompleted = false; // Resetear flag de inicialización
     _initTimeoutTimer?.cancel();
 
     // 5. Desconectar del repositorio (esto llamará al BLE adapter)
@@ -195,7 +195,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     final maybeWeightPattern = line.contains('[') && line.contains(']');
 
     // ═══════════════════════════════════════════════════════════
-    // MANEJO DE INICIALIZACIÓN {ZA1} → {SPWU} y EW7
+    // MANEJO DE INICIALIZACIÓN {ZA1} → {MSWU} y EW7
     // ═══════════════════════════════════════════════════════════
     if (_initializationStep == _ew7StepZa1 && _isEzi) {
       // EW7: Esperando respuesta de {ZA1}
@@ -231,17 +231,17 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         print('✅ INIT Paso 1: {ZA1} confirmado (ACK: $line)');
         _initTimeoutTimer?.cancel();
         _initializationStep = 2;
-        // Enviar siguiente comando: {SPWU} para consultar unidades
-        print('➡️ INIT Paso 2: Enviando {SPWU}...');
-        add(SendCommandRequested('{SPWU}'));
+        // Enviar siguiente comando: {MSWU} para consultar unidades
+        print('➡️ INIT Paso 2: Enviando {MSWU}...');
+        add(SendCommandRequested('{MSWU}'));
         return;
       }
     } else if (_initializationStep == 2) {
-      // Esperando respuesta de {SPWU}
-      // Solo procesar si el último comando enviado fue {SPWU}
+      // Esperando respuesta de {MSWU}
+      // Solo procesar si el último comando enviado fue {MSWU}
       if (_lastInitCommand != ScaleCommand.weightUnit.code &&
-          _lastInitCommand != '{SPWU}') {
-        // No es respuesta a {SPWU}, ignorar esta línea
+          _lastInitCommand != '{MSWU}') {
+        // No es respuesta a {MSWU}, ignorar esta línea
         return;
       }
 
@@ -249,7 +249,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
       // Aceptar solo respuestas esperadas de unidad
       if (lower == 'kg' || lower == 'lb' || lower == '0' || lower == '1') {
-        print('✅ INIT Paso 2: {SPWU} recibido: $line');
+        print('✅ INIT Paso 2: {MSWU} recibido: $line');
         _initTimeoutTimer?.cancel();
         String? unit;
         if (lower == '1' || lower == 'lb') {
@@ -259,6 +259,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         }
         emit(s.copyWith(weightUnit: unit ?? s.weightUnit));
         _initializationStep = 0; // INICIALIZACIÓN COMPLETADA
+        _initializationCompleted = true; // Marcar como completada
         print('🎉 INIT: Secuencia completada. Iniciando polling de peso...');
         // Reiniciar polling de peso
         _sendNextWeightCommand();
@@ -279,6 +280,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           emit(s.copyWith(weightUnit: unit));
         }
         _initializationStep = 0;
+        _initializationCompleted = true; // Marcar como completada
         print('🎉 Cambio de unidad completado. Reanudando polling de peso...');
         _sendNextWeightCommand();
         return;
@@ -370,7 +372,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
       }
 
       final isInitializationCommand = e.command == '{ZA1}' ||
-          e.command == '{SPWU}' ||
+          e.command == '{MSWU}' ||
           e.command == ScaleCommand.setUnitKg.code ||
           e.command == ScaleCommand.setUnitLb.code ||
           e.command == ScaleCommand.getErrors.code ||
@@ -388,8 +390,8 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
           _initializationStep =
               _isEzi ? _ew7StepZa1 : 1; // Esperando respuesta ZA1
           _startInitTimeout(_initializationStep);
-        } else if (e.command == '{SPWU}') {
-          _initializationStep = 2; // Esperando respuesta SPWU
+        } else if (e.command == '{MSWU}') {
+          _initializationStep = 2; // Esperando respuesta MSWU
           _startInitTimeout(2);
         } else if (e.command == ScaleCommand.getErrors.code) {
           _initializationStep = _ew7StepErrors;
@@ -468,15 +470,22 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
 
     _pollingSuspended = false;
     _weightCommandInFlight = false;
-    _initializationStep = 0;
 
-    print('🎯 === INICIANDO POLLING CON INICIALIZACIÓN ===');
+    print('🎯 === INICIANDO POLLING ===');
+
+    // Si ya completamos la inicialización antes, saltamos directo a peso (más rápido)
+    if (_initializationCompleted) {
+      print('⚡ Ya inicializado previamente: saltando secuencia, lectura rápida de peso');
+      _sendNextWeightCommand();
+      return;
+    }
 
     // Optimización EW7: iniciar lectura de peso inmediatamente, sin secuencia previa
     if (_isEzi) {
       print(
           '⚡ EW7: Saltando inicialización, iniciando lectura de peso inmediata');
       _initializationStep = 0;
+      _initializationCompleted = true;
       _sendNextWeightCommand();
       return;
     }
@@ -491,11 +500,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     if (_initializationStep != e.step) return;
 
     if (e.step == 1) {
-      print('⏰ INIT Timeout en ZA1, forzando avance a SPWU');
+      print('⏰ INIT Timeout en ZA1, forzando avance a MSWU');
       _initializationStep = 2;
-      add(SendCommandRequested('{SPWU}'));
+      add(SendCommandRequested('{MSWU}'));
     } else if (e.step == 2) {
-      print('⏰ INIT Timeout en SPWU, infiriendo unidad del último comando');
+      print('⏰ INIT Timeout en MSWU, infiriendo unidad del último comando');
       if (state is Connected) {
         String? unit;
         if (_lastInitCommand == ScaleCommand.setUnitLb.code) {
@@ -508,6 +517,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
         emit((state as Connected).copyWith(weightUnit: unit));
       }
       _initializationStep = 0;
+      _initializationCompleted = true; // Completada aunque con timeout
       _sendNextWeightCommand();
     } else if (e.step == _ew7StepZa1) {
       print('⏰ EW7: Timeout esperando ZA1, enviando ZE1 igualmente');
@@ -520,6 +530,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, ConnectionState> {
     } else if (e.step == _ew7StepCarriageReturn) {
       print('⏰ EW7: Timeout esperando ZC1, iniciando polling de peso');
       _initializationStep = 0;
+      _initializationCompleted = true; // EW7 completado
       _sendNextWeightCommand();
     }
   }

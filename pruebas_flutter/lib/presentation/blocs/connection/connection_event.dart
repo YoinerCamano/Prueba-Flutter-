@@ -11,9 +11,9 @@ enum ScaleCommand {
   cellSpecifications('{SCLS}'),
   resetZero('{SCZERO}'),
   adcNoise('{SCAV}'),
-  weightUnit('{SPWU}'),
-  setUnitKg('{SPWU0}'),
-  setUnitLb('{SPWU1}'),
+  weightUnit('{MSWU}'),
+  setUnitKg('{MSWU0}'),
+  setUnitLb('{MSWU1}'),
   enableAcknowledgment('{ZA1}'), // Habilita respuestas de confirmación "^"
   getErrors('{ZE1}'), // Obtener errores de la báscula
   setCarriageReturn('{ZC1}'); // Establecer retorno de carro

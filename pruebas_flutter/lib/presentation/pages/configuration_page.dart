@@ -24,9 +24,18 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   bool _savingCuadrilla = false;
   bool _savingOperario = false;
   bool _savingBascula = false;
+  bool _savingSaveRules = false;
+  String? _pendingUnitChange;
+  String? _cuadrillaError;
+  String? _operarioError;
+  String? _basculaError;
 
   // Datos
   String? _currentUnit;
+  bool _autoSaveEnabled = false;
+  bool _manualSaveEnabled = true;
+  double _minimumSaveWeight = 1.0;
+  double _unloadThreshold = 0.5;
   List<Cuadrilla> _cuadrillas = [];
   List<Operario> _operarios = [];
   List<Bascula> _basculas = [];
@@ -38,6 +47,8 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   final _operarioNombreCtrl = TextEditingController();
   final _basculaNombreCtrl = TextEditingController();
   final _basculaUbicacionCtrl = TextEditingController();
+  final _minimumSaveWeightCtrl = TextEditingController();
+  final _unloadThresholdCtrl = TextEditingController();
 
   // Suscripcion al BLoC
   StreamSubscription? _blocSubscription;
@@ -63,7 +74,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
     Future.delayed(const Duration(milliseconds: 50), () {
       if (mounted) {
-        _loadCurrentUnit();
+        unawaited(_loadCurrentUnit());
       }
     });
   }
@@ -76,6 +87,8 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     _operarioNombreCtrl.dispose();
     _basculaNombreCtrl.dispose();
     _basculaUbicacionCtrl.dispose();
+    _minimumSaveWeightCtrl.dispose();
+    _unloadThresholdCtrl.dispose();
     _connectionBloc.add(conn.StartPolling());
     super.dispose();
   }
@@ -84,7 +97,11 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Inicializar DatabaseService cuando el árbol ya está montado.
+    final wasNull = _databaseService == null;
     _databaseService ??= DatabaseProvider.of(context);
+    if (wasNull && mounted) {
+      unawaited(_loadCurrentUnit());
+    }
 
     // Cargar catálogos solo una vez cuando el provider ya existe.
     if (!_catalogsLoaded && _databaseService != null) {
@@ -93,31 +110,136 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     }
   }
 
-  void _loadCurrentUnit() {
+  Future<void> _loadCurrentUnit() async {
     final currentState = _connectionBloc.state;
     if (currentState is conn.Connected && currentState.weightUnit != null) {
+      await _savePreferredUnit(currentState.weightUnit!);
       setState(() {
         _currentUnit = currentState.weightUnit;
         _isLoading = false;
       });
+      unawaited(_loadSaveRules());
       return;
     }
 
     _blocSubscription = _connectionBloc.stream.listen((state) {
       if (state is conn.Connected && mounted && state.weightUnit != null) {
         _timeoutTimer?.cancel();
+        final shouldNotifySuccess =
+            _isChangingUnit && _pendingUnitChange == state.weightUnit;
         setState(() {
           _currentUnit = state.weightUnit;
           _isLoading = false;
           _isChangingUnit = false;
+          _pendingUnitChange = null;
         });
+        unawaited(_savePreferredUnit(state.weightUnit!));
+        if (shouldNotifySuccess) {
+          _showMessage('Unidad actualizada');
+        }
+        unawaited(_loadSaveRules());
       }
     });
 
+    final db = _databaseService;
+    final preferredUnit = db != null ? await db.getPreferredWeightUnit() : 'kg';
+
     setState(() {
       _isLoading = false;
-      _currentUnit = 'kg';
+      _currentUnit = preferredUnit;
     });
+
+    unawaited(_loadSaveRules());
+  }
+
+  Future<void> _loadSaveRules() async {
+    final db = _databaseService;
+    if (db == null) return;
+    final autoSaveEnabled = await db.getAutoSaveEnabled();
+    final manualSaveEnabled = await db.getManualSaveEnabled();
+    final minimumSaveWeight = await db.getMinimumSaveWeight();
+    final unloadThreshold = await db.getUnloadThreshold();
+
+    var normalizedAuto = autoSaveEnabled;
+    var normalizedManual = manualSaveEnabled;
+    if (normalizedAuto == normalizedManual) {
+      // Estado heredado/ambiguo: por defecto mantener manual activo.
+      normalizedAuto = false;
+      normalizedManual = true;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _autoSaveEnabled = normalizedAuto;
+      _manualSaveEnabled = normalizedManual;
+      _minimumSaveWeight = minimumSaveWeight;
+      _unloadThreshold = unloadThreshold;
+      _minimumSaveWeightCtrl.text = minimumSaveWeight.toStringAsFixed(2);
+      _unloadThresholdCtrl.text = unloadThreshold.toStringAsFixed(2);
+    });
+  }
+
+  Future<void> _saveSaveRules() async {
+    final db = _databaseService;
+    if (db == null) return;
+
+    final minimum =
+        double.tryParse(_minimumSaveWeightCtrl.text.trim().replaceAll(',', '.'));
+    final unload =
+        double.tryParse(_unloadThresholdCtrl.text.trim().replaceAll(',', '.'));
+
+    if (minimum == null || unload == null) {
+      _showMessage('Ingresa valores numéricos válidos', isError: true);
+      return;
+    }
+    if (minimum <= 0) {
+      _showMessage('El peso mínimo debe ser mayor a 0', isError: true);
+      return;
+    }
+    if (unload < 0) {
+      _showMessage('El umbral de descarga no puede ser negativo', isError: true);
+      return;
+    }
+    if (unload >= minimum) {
+      _showMessage(
+        'El umbral de descarga debe ser menor al peso mínimo',
+        isError: true,
+      );
+      return;
+    }
+
+    setState(() => _savingSaveRules = true);
+    try {
+      var normalizedAuto = _autoSaveEnabled;
+      var normalizedManual = _manualSaveEnabled;
+      if (normalizedAuto == normalizedManual) {
+        normalizedAuto = false;
+        normalizedManual = true;
+      }
+
+      await db.setAutoSaveEnabled(normalizedAuto);
+      await db.setManualSaveEnabled(normalizedManual);
+      await db.setMinimumSaveWeight(minimum);
+      await db.setUnloadThreshold(unload);
+      if (!mounted) return;
+      setState(() {
+        _autoSaveEnabled = normalizedAuto;
+        _manualSaveEnabled = normalizedManual;
+        _minimumSaveWeight = minimum;
+        _unloadThreshold = unload;
+      });
+      _showMessage('Configuración de guardado actualizada');
+    } catch (e) {
+      _showMessage('Error guardando configuración: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _savingSaveRules = false);
+    }
+  }
+
+  Future<void> _savePreferredUnit(String unit) async {
+    final db = _databaseService;
+    if (db == null) return;
+    await db.setPreferredWeightUnit(unit);
   }
 
   Future<void> _loadCuadrillas() async {
@@ -176,18 +298,107 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   }
 
   void _changeUnit(String targetUnit) {
+    if (_isChangingUnit || _currentUnit == targetUnit) return;
     setState(() => _isChangingUnit = true);
+    _pendingUnitChange = targetUnit;
 
-    final changeCommand = targetUnit == 'kg' ? '{SPWU0}' : '{SPWU1}';
+    final changeCommand = targetUnit == 'kg'
+        ? conn.ScaleCommand.setUnitKg.code
+        : conn.ScaleCommand.setUnitLb.code;
     _connectionBloc.add(conn.SendCommandRequested(changeCommand));
 
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(const Duration(seconds: 5), () {
       if (mounted && _isChangingUnit) {
-        setState(() => _isChangingUnit = false);
+        setState(() {
+          _isChangingUnit = false;
+          _pendingUnitChange = null;
+        });
         _showMessage('Error al cambiar unidad - timeout', isError: true);
       }
     });
+  }
+
+  Future<void> _handleSaveCuadrilla() async {
+    final nombre = _cuadrillaCtrl.text.trim();
+    if (nombre.isEmpty) {
+      setState(() => _cuadrillaError = 'Ingresa una cuadrilla');
+      return;
+    }
+    setState(() => _cuadrillaError = null);
+    await _saveCuadrilla();
+  }
+
+  Future<void> _handleSaveOperario() async {
+    final nombre = _operarioNombreCtrl.text.trim();
+    if (nombre.isEmpty) {
+      setState(() => _operarioError = 'Ingresa un operario');
+      return;
+    }
+    if (_selectedCuadrillaId == null) {
+      _showMessage('Selecciona una cuadrilla', isError: true);
+      return;
+    }
+    setState(() => _operarioError = null);
+    await _saveOperario();
+  }
+
+  Future<void> _handleSaveBascula() async {
+    final nombre = _basculaNombreCtrl.text.trim();
+    if (nombre.isEmpty) {
+      setState(() => _basculaError = 'Ingresa una báscula');
+      return;
+    }
+    setState(() => _basculaError = null);
+    await _saveBascula();
+  }
+
+  Future<void> _confirmSendZero() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirmar acción'),
+        content: const Text('¿Deseas restablecer la báscula a cero?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Confirmar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      _sendZeroCommand();
+    }
+  }
+
+  Future<void> _confirmDisconnect() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirmar desconexión'),
+        content:
+            const Text('¿Deseas finalizar la conexión con la báscula actual?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Desconectar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      context.read<conn.ConnectionBloc>().add(conn.DisconnectRequested());
+      Navigator.of(context).pop();
+    }
   }
 
   @override
@@ -200,7 +411,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
         },
         child: Scaffold(
           appBar: AppBar(
-            title: const Text('Configuracion'),
+            title: const Text('Configuración del sistema'),
             leading: IconButton(
               icon: const Icon(Icons.arrow_back),
               onPressed: () {
@@ -208,8 +419,9 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                 Navigator.of(context).pop();
               },
             ),
-            bottom: const TabBar(
-              tabs: [
+            bottom: TabBar(
+              indicatorSize: TabBarIndicatorSize.tab,
+              tabs: const [
                 Tab(text: 'Ajustes'),
                 Tab(text: 'Datos'),
               ],
@@ -224,354 +436,102 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
                 return TabBarView(
                   children: [
-                    SingleChildScrollView(
+                    ListView(
                       padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // Unidad de peso
-                          Card(
-                            elevation: 0,
-                            color:
-                                Theme.of(context).colorScheme.surfaceContainer,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(20),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.scale,
-                                          size: 24, color: Colors.blue),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Unidad de Peso',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleLarge,
-                                      ),
-                                      if (_isLoading || _isChangingUnit) ...[
-                                        const Spacer(),
-                                        const SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                  const SizedBox(height: 20),
-
-                                  // Unidad actual
-                                  if (_currentUnit != null) ...[
-                                    Center(
-                                      child: Column(
-                                        children: [
-                                          const Text(
-                                            'Unidad Actual',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: Colors.grey,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 24,
-                                              vertical: 12,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: _currentUnit == 'kg'
-                                                  ? Colors.blue.shade100
-                                                  : _currentUnit == 'lb'
-                                                      ? Colors.green.shade100
-                                                      : Colors.grey.shade200,
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              border: Border.all(
-                                                color: _currentUnit == 'kg'
-                                                    ? Colors.blue
-                                                    : _currentUnit == 'lb'
-                                                        ? Colors.green
-                                                        : Colors.grey,
-                                                width: 2,
-                                              ),
-                                            ),
-                                            child: Text(
-                                              _currentUnit == 'kg'
-                                                  ? 'Kilogramos (kg)'
-                                                  : _currentUnit == 'lb'
-                                                      ? 'Libras (lb)'
-                                                      : 'Desconocida',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                                color: _currentUnit == 'kg'
-                                                    ? Colors.blue.shade900
-                                                    : _currentUnit == 'lb'
-                                                        ? Colors.green.shade900
-                                                        : Colors.grey.shade700,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 24),
-                                  ],
-
-                                  if (_currentUnit != null &&
-                                      _currentUnit != 'desconocida') ...[
-                                    const Text(
-                                      'Cambiar a:',
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: ElevatedButton.icon(
-                                            onPressed: _currentUnit == 'kg' ||
-                                                    _isChangingUnit
-                                                ? null
-                                                : () => _changeUnit('kg'),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: Colors.blue,
-                                              foregroundColor: Colors.white,
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 16),
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                              ),
-                                            ),
-                                            icon: const Icon(Icons.straighten),
-                                            label: const Text(
-                                              'Kilogramos',
-                                              style: TextStyle(
-                                                  fontWeight: FontWeight.bold),
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: ElevatedButton.icon(
-                                            onPressed: _currentUnit == 'lb' ||
-                                                    _isChangingUnit
-                                                ? null
-                                                : () => _changeUnit('lb'),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: Colors.green,
-                                              foregroundColor: Colors.white,
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 16),
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                              ),
-                                            ),
-                                            icon: const Icon(
-                                                Icons.fitness_center),
-                                            label: const Text(
-                                              'Libras',
-                                              style: TextStyle(
-                                                  fontWeight: FontWeight.bold),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-
-                                  if (_isLoading && _currentUnit == null) ...[
-                                    const Center(
-                                      child: Padding(
-                                        padding: EdgeInsets.all(20),
-                                        child: Column(
-                                          children: [
-                                            CircularProgressIndicator(),
-                                            SizedBox(height: 16),
-                                            Text('Consultando unidad...'),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ),
-
-                          const SizedBox(height: 16),
-
-                          // Altas de catalogo
-                          _CatalogForms(
-                            cuadrillaCtrl: _cuadrillaCtrl,
-                            operarioNombreCtrl: _operarioNombreCtrl,
-                            cuadrillas: _cuadrillas,
-                            selectedCuadrillaId: _selectedCuadrillaId,
-                            basculaNombreCtrl: _basculaNombreCtrl,
-                            basculaUbicacionCtrl: _basculaUbicacionCtrl,
-                            savingCuadrilla: _savingCuadrilla,
-                            savingOperario: _savingOperario,
-                            savingBascula: _savingBascula,
-                            onSaveCuadrilla: _saveCuadrilla,
-                            onSaveOperario: _saveOperario,
-                            onSaveBascula: _saveBascula,
-                            onSelectCuadrilla: (id) =>
-                                setState(() => _selectedCuadrillaId = id),
-                          ),
-
-                          const SizedBox(height: 16),
-
-                          // Restablecer bascula a cero
-                          Card(
-                            elevation: 0,
-                            color:
-                                Theme.of(context).colorScheme.surfaceContainer,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(20),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(Icons.exposure_zero,
-                                          size: 24, color: Colors.blue),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Restablecer a Cero',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleLarge,
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    'Pone la bascula en cero para comenzar nuevas mediciones',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(
-                                          color: Colors.grey,
-                                        ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: FilledButton.tonalIcon(
-                                      onPressed: () => _sendZeroCommand(),
-                                      icon: const Icon(Icons.exposure_zero),
-                                      label: const Text('ENVIAR COMANDO ZERO'),
-                                      style: FilledButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                            vertical: 16),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                          const SizedBox(height: 16),
-
-                          // Desconectar dispositivo
-                          Card(
-                            elevation: 0,
-                            color: Colors.red.shade50,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(20),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Icon(Icons.link_off,
-                                          size: 24, color: Colors.red.shade700),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'Desconectar Dispositivo',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleLarge
-                                            ?.copyWith(
-                                                color: Colors.red.shade900),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 16),
-                                  FilledButton.icon(
-                                    onPressed: () {
-                                      context
-                                          .read<conn.ConnectionBloc>()
-                                          .add(conn.DisconnectRequested());
-                                      Navigator.of(context).pop();
-                                    },
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor: Colors.red,
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(
-                                          vertical: 16),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                    ),
-                                    icon: const Icon(Icons.link_off),
-                                    label: const Text(
-                                      'Desconectar',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.bold),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                          const SizedBox(height: 16),
-
-                          // Info
-                          Card(
-                            elevation: 0,
-                            color: Colors.blue.shade50,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.info_outline, color: Colors.blue),
-                                  SizedBox(width: 12),
-                                  Expanded(
-                                    child: Text(
-                                      'El cambio de unidad se aplica inmediatamente en la bascula.',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      children: [
+                        _PreferenceCard(
+                          title: 'Unidad de medición',
+                          subtitle:
+                              'Define cómo se visualizarán los pesos registrados',
+                          isLoading: _isLoading || _isChangingUnit,
+                          selectedUnit: (_currentUnit == 'lb') ? 'lb' : 'kg',
+                          onChanged: _changeUnit,
+                        ),
+                        const SizedBox(height: 16),
+                        _SaveBehaviorCard(
+                          autoSaveEnabled: _autoSaveEnabled,
+                          manualSaveEnabled: _manualSaveEnabled,
+                          minimumSaveWeightCtrl: _minimumSaveWeightCtrl,
+                          unloadThresholdCtrl: _unloadThresholdCtrl,
+                          saving: _savingSaveRules,
+                          onToggleAutoSave: (value) => setState(() {
+                            _autoSaveEnabled = value;
+                            if (value) {
+                              _manualSaveEnabled = false;
+                            } else if (!_manualSaveEnabled) {
+                              _manualSaveEnabled = true;
+                            }
+                          }),
+                          onToggleManualSave: (value) => setState(() {
+                            _manualSaveEnabled = value;
+                            if (value) {
+                              _autoSaveEnabled = false;
+                            } else if (!_autoSaveEnabled) {
+                              _autoSaveEnabled = true;
+                            }
+                          }),
+                          onSave: _saveSaveRules,
+                        ),
+                        const SizedBox(height: 16),
+                        _OperationalDataCard(
+                          cuadrillaCtrl: _cuadrillaCtrl,
+                          operarioNombreCtrl: _operarioNombreCtrl,
+                          cuadrillas: _cuadrillas,
+                          selectedCuadrillaId: _selectedCuadrillaId,
+                          basculaNombreCtrl: _basculaNombreCtrl,
+                          savingCuadrilla: _savingCuadrilla,
+                          savingOperario: _savingOperario,
+                          savingBascula: _savingBascula,
+                          cuadrillaError: _cuadrillaError,
+                          operarioError: _operarioError,
+                          basculaError: _basculaError,
+                          onCuadrillaChanged: (_) {
+                            if (_cuadrillaError != null) {
+                              setState(() => _cuadrillaError = null);
+                            }
+                          },
+                          onOperarioChanged: (_) {
+                            if (_operarioError != null) {
+                              setState(() => _operarioError = null);
+                            }
+                          },
+                          onBasculaChanged: (_) {
+                            if (_basculaError != null) {
+                              setState(() => _basculaError = null);
+                            }
+                          },
+                          onSaveCuadrilla: _handleSaveCuadrilla,
+                          onSaveOperario: _handleSaveOperario,
+                          onSaveBascula: _handleSaveBascula,
+                          onSelectCuadrilla: (id) =>
+                              setState(() => _selectedCuadrillaId = id),
+                        ),
+                        const SizedBox(height: 16),
+                        _ActionCard(
+                          title: 'Restablecer báscula',
+                          subtitle: 'Restablece la báscula a cero.',
+                          icon: Icons.scale_outlined,
+                          actionLabel: 'Zero',
+                          onPressed: _confirmSendZero,
+                          isCritical: false,
+                        ),
+                        const SizedBox(height: 16),
+                        _ActionCard(
+                          title: 'Conexión del dispositivo',
+                          subtitle:
+                              'Finaliza la conexión con la báscula actual.',
+                          icon: Icons.link_off,
+                          actionLabel: 'Desconectar',
+                          onPressed: _confirmDisconnect,
+                          isCritical: true,
+                        ),
+                        const SizedBox(height: 16),
+                        const _InfoCard(
+                          text:
+                              'Los cambios de unidad se aplican inmediatamente a la lectura de peso.',
+                        ),
+                        const SizedBox(height: 24),
+                      ],
                     ),
                     _CatalogList(
                       cuadrillas: _cuadrillas,
@@ -1064,43 +1024,71 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   }
 }
 
-class _CatalogForms extends StatelessWidget {
-  final TextEditingController cuadrillaCtrl;
-  final TextEditingController operarioNombreCtrl;
-  final List<Cuadrilla> cuadrillas;
-  final int? selectedCuadrillaId;
-  final TextEditingController basculaNombreCtrl;
-  final TextEditingController basculaUbicacionCtrl;
-  final bool savingCuadrilla;
-  final bool savingOperario;
-  final bool savingBascula;
-  final VoidCallback onSaveCuadrilla;
-  final VoidCallback onSaveOperario;
-  final VoidCallback onSaveBascula;
-  final ValueChanged<int?> onSelectCuadrilla;
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final IconData? icon;
 
-  const _CatalogForms({
-    required this.cuadrillaCtrl,
-    required this.operarioNombreCtrl,
-    required this.cuadrillas,
-    required this.selectedCuadrillaId,
-    required this.basculaNombreCtrl,
-    required this.basculaUbicacionCtrl,
-    required this.savingCuadrilla,
-    required this.savingOperario,
-    required this.savingBascula,
-    required this.onSaveCuadrilla,
-    required this.onSaveOperario,
-    required this.onSaveBascula,
-    required this.onSelectCuadrilla,
+  const _SectionHeader({
+    required this.title,
+    this.subtitle,
+    this.icon,
   });
 
   @override
   Widget build(BuildContext context) {
-    final surface = Theme.of(context).colorScheme.surfaceContainer;
+    final textTheme = Theme.of(context).textTheme;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: 20, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+        ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: textTheme.titleMedium),
+              if (subtitle != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  subtitle!,
+                  style: textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PreferenceCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final bool isLoading;
+  final String selectedUnit;
+  final ValueChanged<String> onChanged;
+
+  const _PreferenceCard({
+    required this.title,
+    required this.subtitle,
+    required this.isLoading,
+    required this.selectedUnit,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Card(
       elevation: 0,
-      color: surface,
+      color: colorScheme.surfaceContainer,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1109,135 +1097,417 @@ class _CatalogForms extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Icon(Icons.add_business, color: Colors.blue),
-                const SizedBox(width: 8),
-                Text(
-                  'Altas rapidas',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Text('Cuadrilla', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Row(
-              children: [
                 Expanded(
-                  child: TextField(
-                    controller: cuadrillaCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre de cuadrilla',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
+                  child: _SectionHeader(
+                    title: title,
+                    subtitle: subtitle,
+                    icon: Icons.tune,
                   ),
                 ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: savingCuadrilla ? null : onSaveCuadrilla,
-                  child: savingCuadrilla
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Guardar'),
-                ),
+                if (isLoading)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
               ],
             ),
-            const SizedBox(height: 16),
-            Text('Operario', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: operarioNombreCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Nombre completo',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: DropdownButtonFormField<int>(
-                    decoration: const InputDecoration(
-                      labelText: 'Cuadrilla',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    initialValue: selectedCuadrillaId,
-                    items: cuadrillas
-                        .map((c) => DropdownMenuItem(
-                              value: c.idCuadrilla,
-                              child: Text(c.nombre),
-                            ))
-                        .toList(),
-                    onChanged: cuadrillas.isEmpty ? null : onSelectCuadrilla,
-                    hint: const Text('Selecciona una cuadrilla'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: savingOperario ||
-                          cuadrillas.isEmpty ||
-                          selectedCuadrillaId == null
-                      ? null
-                      : onSaveOperario,
-                  child: savingOperario
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Guardar'),
-                ),
+            const SizedBox(height: 12),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment<String>(value: 'kg', label: Text('kg')),
+                ButtonSegment<String>(value: 'lb', label: Text('lb')),
               ],
+              selected: {selectedUnit},
+              showSelectedIcon: false,
+              onSelectionChanged: isLoading
+                  ? null
+                  : (selection) {
+                      if (selection.isNotEmpty) {
+                        onChanged(selection.first);
+                      }
+                    },
             ),
-            const SizedBox(height: 16),
-            Text('Bascula', style: Theme.of(context).textTheme.titleMedium),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SaveBehaviorCard extends StatelessWidget {
+  final bool autoSaveEnabled;
+  final bool manualSaveEnabled;
+  final TextEditingController minimumSaveWeightCtrl;
+  final TextEditingController unloadThresholdCtrl;
+  final bool saving;
+  final ValueChanged<bool> onToggleAutoSave;
+  final ValueChanged<bool> onToggleManualSave;
+  final VoidCallback onSave;
+
+  const _SaveBehaviorCard({
+    required this.autoSaveEnabled,
+    required this.manualSaveEnabled,
+    required this.minimumSaveWeightCtrl,
+    required this.unloadThresholdCtrl,
+    required this.saving,
+    required this.onToggleAutoSave,
+    required this.onToggleManualSave,
+    required this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      color: colorScheme.surfaceContainer,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SectionHeader(
+              title: 'Guardado de pesaje',
+              subtitle: 'Configura auto guardado, manual y umbrales de ciclo',
+              icon: Icons.save_as_outlined,
+            ),
+            const SizedBox(height: 12),
+            SwitchListTile.adaptive(
+              value: autoSaveEnabled,
+              onChanged: onToggleAutoSave,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Auto guardado'),
+            ),
+            SwitchListTile.adaptive(
+              value: manualSaveEnabled,
+              onChanged: onToggleManualSave,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Guardado manual'),
+            ),
             const SizedBox(height: 8),
             Wrap(
-              runSpacing: 8,
-              spacing: 8,
+              spacing: 12,
+              runSpacing: 12,
               children: [
                 SizedBox(
-                  width: 220,
+                  width: 210,
                   child: TextField(
-                    controller: basculaNombreCtrl,
+                    controller: minimumSaveWeightCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
                     decoration: const InputDecoration(
-                      labelText: 'Nombre',
+                      labelText: 'Peso mínimo para guardar',
+                      suffixText: 'kg/lb',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
                   ),
                 ),
                 SizedBox(
-                  width: 200,
+                  width: 210,
                   child: TextField(
-                    controller: basculaUbicacionCtrl,
+                    controller: unloadThresholdCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
                     decoration: const InputDecoration(
-                      labelText: 'Ubicacion (opcional)',
+                      labelText: 'Umbral de descarga',
+                      suffixText: 'kg/lb',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
                   ),
                 ),
-                FilledButton.icon(
-                  onPressed: savingBascula ? null : onSaveBascula,
-                  icon: savingBascula
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.save),
-                  label: const Text('Guardar bascula'),
-                ),
               ],
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.tonal(
+                onPressed: saving ? null : onSave,
+                child: saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Guardar configuración'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OperationalDataCard extends StatelessWidget {
+  final TextEditingController cuadrillaCtrl;
+  final TextEditingController operarioNombreCtrl;
+  final List<Cuadrilla> cuadrillas;
+  final int? selectedCuadrillaId;
+  final TextEditingController basculaNombreCtrl;
+  final bool savingCuadrilla;
+  final bool savingOperario;
+  final bool savingBascula;
+  final String? cuadrillaError;
+  final String? operarioError;
+  final String? basculaError;
+  final ValueChanged<String> onCuadrillaChanged;
+  final ValueChanged<String> onOperarioChanged;
+  final ValueChanged<String> onBasculaChanged;
+  final VoidCallback onSaveCuadrilla;
+  final VoidCallback onSaveOperario;
+  final VoidCallback onSaveBascula;
+  final ValueChanged<int?> onSelectCuadrilla;
+
+  const _OperationalDataCard({
+    required this.cuadrillaCtrl,
+    required this.operarioNombreCtrl,
+    required this.cuadrillas,
+    required this.selectedCuadrillaId,
+    required this.basculaNombreCtrl,
+    required this.savingCuadrilla,
+    required this.savingOperario,
+    required this.savingBascula,
+    required this.cuadrillaError,
+    required this.operarioError,
+    required this.basculaError,
+    required this.onCuadrillaChanged,
+    required this.onOperarioChanged,
+    required this.onBasculaChanged,
+    required this.onSaveCuadrilla,
+    required this.onSaveOperario,
+    required this.onSaveBascula,
+    required this.onSelectCuadrilla,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      color: colorScheme.surfaceContainer,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SectionHeader(
+              title: 'Datos operativos',
+              subtitle: 'Registra datos base para operar en campo',
+              icon: Icons.inventory_2_outlined,
+            ),
+            const SizedBox(height: 16),
+            _buildFieldBlock(
+              context,
+              title: 'Cuadrilla',
+              child: TextField(
+                controller: cuadrillaCtrl,
+                onChanged: onCuadrillaChanged,
+                decoration: InputDecoration(
+                  hintText: 'Nombre de cuadrilla',
+                  border: const OutlineInputBorder(),
+                  errorText: cuadrillaError,
+                  isDense: true,
+                ),
+              ),
+              saving: savingCuadrilla,
+              onSave: onSaveCuadrilla,
+            ),
+            const SizedBox(height: 16),
+            _buildFieldBlock(
+              context,
+              title: 'Operario',
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  SizedBox(
+                    width: 260,
+                    child: TextField(
+                      controller: operarioNombreCtrl,
+                      onChanged: onOperarioChanged,
+                      decoration: InputDecoration(
+                        hintText: 'Nombre completo',
+                        border: const OutlineInputBorder(),
+                        errorText: operarioError,
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 220,
+                    child: DropdownButtonFormField<int>(
+                      decoration: const InputDecoration(
+                        labelText: 'Cuadrilla',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      initialValue: selectedCuadrillaId,
+                      items: cuadrillas
+                          .map((c) => DropdownMenuItem<int>(
+                                value: c.idCuadrilla,
+                                child: Text(c.nombre),
+                              ))
+                          .toList(),
+                      onChanged: cuadrillas.isEmpty
+                          ? null
+                          : (id) => onSelectCuadrilla(id),
+                    ),
+                  ),
+                ],
+              ),
+              saving: savingOperario,
+              onSave: onSaveOperario,
+            ),
+            const SizedBox(height: 16),
+            _buildFieldBlock(
+              context,
+              title: 'Báscula',
+              child: TextField(
+                controller: basculaNombreCtrl,
+                onChanged: onBasculaChanged,
+                decoration: InputDecoration(
+                  hintText: 'Nombre de báscula',
+                  border: const OutlineInputBorder(),
+                  errorText: basculaError,
+                  isDense: true,
+                ),
+              ),
+              saving: savingBascula,
+              onSave: onSaveBascula,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFieldBlock(
+    BuildContext context, {
+    required String title,
+    required Widget child,
+    required bool saving,
+    required VoidCallback onSave,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 8),
+        child,
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            const Spacer(),
+            FilledButton.tonal(
+              onPressed: saving ? null : onSave,
+              child: saving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Guardar'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ActionCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final String actionLabel;
+  final VoidCallback onPressed;
+  final bool isCritical;
+
+  const _ActionCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.actionLabel,
+    required this.onPressed,
+    required this.isCritical,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      color: isCritical
+          ? colorScheme.errorContainer
+          : colorScheme.surfaceContainer,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _SectionHeader(
+              title: title,
+              subtitle: subtitle,
+              icon: icon,
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerRight,
+              child: isCritical
+                  ? FilledButton(
+                      onPressed: onPressed,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: colorScheme.error,
+                        foregroundColor: colorScheme.onError,
+                      ),
+                      child: Text(actionLabel),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: onPressed,
+                      icon: Icon(icon),
+                      label: Text(actionLabel),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoCard extends StatelessWidget {
+  final String text;
+
+  const _InfoCard({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      color: colorScheme.primaryContainer,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(Icons.info_outline, color: colorScheme.onPrimaryContainer),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                text,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onPrimaryContainer,
+                    ),
+              ),
             ),
           ],
         ),

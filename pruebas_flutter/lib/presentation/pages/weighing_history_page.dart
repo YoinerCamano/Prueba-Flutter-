@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/database_provider.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 import '../widgets/sqlite_widgets.dart';
+import '../widgets/bunch_colors.dart';
 import 'bunch_table_page.dart';
 
 /// Página para ver el historial de racimos
@@ -30,6 +31,18 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
   int _syncedFilter = 0; // 0 todos, 1 sí, 2 no
   DateTime? _startDate;
   DateTime? _endDate;
+
+  String _normalizeText(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('ñ', 'n')
+        .trim();
+  }
 
   // 🎯 Referencia al BLoC para detener/reanudar polling
   late final conn.ConnectionBloc _connectionBloc;
@@ -128,7 +141,31 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
                 },
               ),
               IconButton(
-                icon: const Icon(Icons.filter_alt),
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Icon(
+                      _filters.isEmpty
+                          ? Icons.filter_alt_outlined
+                          : Icons.filter_alt,
+                      color:
+                          _filters.isEmpty ? null : Colors.amber.shade700,
+                    ),
+                    if (!_filters.isEmpty)
+                      Positioned(
+                        right: -2,
+                        top: -2,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
                 tooltip: 'Filtros',
                 onPressed: _openFiltersSheet,
               ),
@@ -257,7 +294,24 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
   }
 
   // ----- Filtros -----
-  void _openFiltersSheet() {
+  Future<void> _openFiltersSheet() async {
+    final databaseService = DatabaseProvider.of(context);
+    List<String> availableColors = const [];
+    try {
+      final docs = await databaseService.streamBunchEntries(limit: 5000).first;
+      final map = <String, String>{};
+      for (final d in docs) {
+        final raw = (d['cintaColor'] ?? '').toString().trim();
+        if (raw.isEmpty) continue;
+        final name = BunchColors.getColorName(raw).trim();
+        final display = name.isEmpty ? raw : name;
+        map[_normalizeText(display)] = display;
+      }
+      availableColors = map.values.toList()..sort((a, b) => a.compareTo(b));
+    } catch (_) {
+      availableColors = const [];
+    }
+
     // Sincronizar controles con filtros actuales
     _minWeightCtrl.text = _filters.minWeight?.toString() ?? '';
     _maxWeightCtrl.text = _filters.maxWeight?.toString() ?? '';
@@ -502,9 +556,29 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
                             ),
                           ),
                           SizedBox(
-                            width: 150,
-                            child: TextField(
-                              controller: _colorCtrl,
+                            width: 220,
+                            child: DropdownButtonFormField<String>(
+                              value: _colorCtrl.text.trim().isEmpty
+                                  ? ''
+                                  : (availableColors.any((c) =>
+                                          c.toLowerCase() ==
+                                          _colorCtrl.text.trim().toLowerCase())
+                                      ? _colorCtrl.text.trim()
+                                      : ''),
+                              items: ['Todos', ...availableColors]
+                                  .map(
+                                    (c) => DropdownMenuItem<String>(
+                                      value: c == 'Todos' ? '' : c,
+                                      child: Text(c),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (value) {
+                                setModalState(() {
+                                  _colorCtrl.text = value ?? '';
+                                });
+                              },
+                              isExpanded: true,
                               decoration: const InputDecoration(
                                 labelText: 'Color de cinta',
                                 border: OutlineInputBorder(),

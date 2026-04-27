@@ -4,16 +4,7 @@ import '../../domain/entities.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
 
 class WeightCard extends StatefulWidget {
-  final WeightReading? weight;
-  final BatteryStatus? batteryVoltage;
-  final BatteryStatus? batteryPercent;
-
-  const WeightCard({
-    super.key,
-    this.weight,
-    this.batteryVoltage,
-    this.batteryPercent,
-  });
+  const WeightCard({super.key});
 
   @override
   State<WeightCard> createState() => _WeightCardState();
@@ -53,55 +44,48 @@ class _WeightCardState extends State<WeightCard> {
     }
   }
 
-  String _getStatusText(WeightStatus status) {
-    switch (status) {
-      case WeightStatus.stable:
-        return 'Estable';
-      case WeightStatus.unstable:
-        return 'Inestable';
-      case WeightStatus.negative:
-        return 'Negativo';
-      case WeightStatus.overload:
-        return '-------';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final w = widget.weight?.kg;
-
     return BlocBuilder<conn.ConnectionBloc, conn.ConnectionState>(
-      builder: (context, state) {
-        // Obtener la unidad del estado del BLoC (por defecto 'kg')
-        String unit = 'kg';
-        if (state is conn.Connected && state.weightUnit != null) {
-          unit = state.weightUnit!;
+      buildWhen: (prev, curr) {
+        if (prev is conn.Connected && curr is conn.Connected) {
+          return prev.weight?.kg != curr.weight?.kg ||
+              prev.weight?.status != curr.weight?.status ||
+              prev.weightUnit != curr.weightUnit;
         }
+        return prev.runtimeType != curr.runtimeType;
+      },
+      builder: (context, state) {
+        final connState = state is conn.Connected ? state : null;
+        final w = connState?.weight?.kg;
+        final weight = connState?.weight;
+        final String unit =
+            (connState?.weightUnit?.isNotEmpty == true) ? connState!.weightUnit! : 'kg';
 
         return Card(
           elevation: 0,
           color: Theme.of(context).colorScheme.surfaceContainer,
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // Header con título
                 Row(
                   children: [
-                    const Icon(Icons.monitor_weight, size: 24),
-                    const SizedBox(width: 12),
+                    const Icon(Icons.monitor_weight, size: 20),
+                    const SizedBox(width: 8),
                     Text(
                       'Peso Actual',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                           ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 6),
                 // Peso principal centrado con color según estado
                 Center(
                   child: Column(
@@ -111,51 +95,25 @@ class _WeightCardState extends State<WeightCard> {
                         child: Text(
                           w != null
                               ? '${w.toStringAsFixed(2)} $unit'
-                              : (widget.weight?.status == WeightStatus.overload
+                              : (weight?.status == WeightStatus.overload
                                   ? '--- $unit'
                                   : '--.-- $unit'),
                           style: Theme.of(context)
                               .textTheme
-                              .displayLarge
+                              .displaySmall
                               ?.copyWith(
                                 fontWeight: FontWeight.bold,
-                                color: widget.weight != null
-                                    ? _getWeightColor(widget.weight!.status)
+                                color: weight != null
+                                    ? _getWeightColor(weight.status)
                                     : null,
                               ),
                         ),
                       ),
-                      // Indicador de estado del peso
-                      if (widget.weight != null) ...[
-                        const SizedBox(height: 4),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: _getWeightColor(widget.weight!.status)
-                                .withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: _getWeightColor(widget.weight!.status)
-                                  .withOpacity(0.3),
-                            ),
-                          ),
-                          child: Text(
-                            _getStatusText(widget.weight!.status),
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(
-                                  color: _getWeightColor(widget.weight!.status),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                          ),
-                        ),
-                      ],
+
                     ],
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 4),
               ],
             ),
           ),

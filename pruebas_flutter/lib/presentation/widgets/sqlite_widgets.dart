@@ -3,6 +3,7 @@ import '../../core/database_provider.dart';
 import 'bunch_colors.dart';
 
 class BunchFilters {
+  final int? idViaje;
   final DateTime? startDate;
   final DateTime? endDate;
   final double? minWeight;
@@ -14,6 +15,7 @@ class BunchFilters {
   final int syncedFilter; // 0 todos, 1 si, 2 no
 
   const BunchFilters({
+    this.idViaje,
     this.startDate,
     this.endDate,
     this.minWeight,
@@ -26,6 +28,7 @@ class BunchFilters {
   });
 
   bool get isEmpty =>
+      idViaje == null &&
       startDate == null &&
       endDate == null &&
       minWeight == null &&
@@ -112,6 +115,10 @@ class BunchHistoryWidget extends StatelessWidget {
             final bunchId = bunch['id'] as int;
             final number = bunch['number'] ?? 0;
             final weightKg = bunch['weightKg'] ?? 0.0;
+            final unit = ((bunch['unidad'] ?? 'kg') as String).toLowerCase() ==
+                    'lb'
+                ? 'lb'
+                : 'kg';
             final weighingTime = bunch['weighingTime'] as String?;
             final cintaColor = bunch['cintaColor'] ?? '';
             final cuadrilla = bunch['cuadrilla'] ?? '';
@@ -119,6 +126,7 @@ class BunchHistoryWidget extends StatelessWidget {
             final bascula = bunch['bascula'] ?? '';
             final basculaModelo = bunch['bascula_modelo'] ?? '';
             final lote = bunch['lote'] ?? '';
+            final idViaje = bunch['idViaje'];
             final recusado = bunch['recusado'] == 1;
             final synced =
                 (bunch['syncedToFirebase'] ?? bunch['synced'] ?? 0) == 1;
@@ -143,12 +151,13 @@ class BunchHistoryWidget extends StatelessWidget {
                 : '';
 
             return Card(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               elevation: isSelected ? 4 : 1,
               color: isSelected
                   ? Theme.of(context).colorScheme.primaryContainer
                   : null,
               child: ListTile(
+                dense: true,
                 onTap: selectionMode
                     ? () => onSelectionChanged?.call(bunchId, !isSelected)
                     : null,
@@ -182,9 +191,9 @@ class BunchHistoryWidget extends StatelessWidget {
                 title: Row(
                   children: [
                     Text(
-                      '${weightKg.toStringAsFixed(2)} kg',
+                      '${weightKg.toStringAsFixed(2)} $unit',
                       style: const TextStyle(
-                        fontSize: 18,
+                        fontSize: 14,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -202,26 +211,17 @@ class BunchHistoryWidget extends StatelessWidget {
                       const Icon(Icons.cloud_off, size: 16, color: Colors.grey),
                   ],
                 ),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('$dateStr $timeStr'),
-                    if (cuadrilla.isNotEmpty ||
-                        operario.isNotEmpty ||
-                        bascula.isNotEmpty)
-                      Text(
-                        [
-                          if (cuadrilla.isNotEmpty) 'Cuadrilla: $cuadrilla',
-                          if (operario.isNotEmpty) 'Operario: $operario',
-                          if (bascula.isNotEmpty)
-                            'Báscula: $bascula${basculaModelo.isNotEmpty ? " ($basculaModelo)" : ""}',
-                          if (lote.isNotEmpty) 'Lote: $lote',
-                        ].join(' • '),
-                        style: const TextStyle(fontSize: 12),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                  ],
+                subtitle: Text(
+                  [
+                    '$dateStr $timeStr',
+                    if (idViaje != null) 'Viaje #$idViaje',
+                    if (cuadrilla.isNotEmpty) cuadrilla,
+                    if (operario.isNotEmpty) operario,
+                    if (lote.isNotEmpty) 'Lote: $lote',
+                  ].join(' • '),
+                  style: const TextStyle(fontSize: 11),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 trailing: selectionMode
                     ? null
@@ -316,6 +316,13 @@ class BunchHistoryWidget extends StatelessWidget {
     final loteQuery = (filters.lote ?? '').trim().toLowerCase();
 
     return bunches.where((b) {
+      if (filters.idViaje != null) {
+        final currentViaje = b['idViaje'];
+        if (currentViaje == null || currentViaje != filters.idViaje) {
+          return false;
+        }
+      }
+
       // Peso
       final rawWeight = b['weightKg'];
       final weight = rawWeight is num
