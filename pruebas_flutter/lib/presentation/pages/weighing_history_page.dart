@@ -298,18 +298,19 @@ class _WeighingHistoryPageState extends State<WeighingHistoryPage> {
     final databaseService = DatabaseProvider.of(context);
     List<String> availableColors = const [];
     try {
-      final docs = await databaseService.streamBunchEntries(limit: 5000).first;
-      final map = <String, String>{};
-      for (final d in docs) {
-        final raw = (d['cintaColor'] ?? '').toString().trim();
-        if (raw.isEmpty) continue;
-        final name = BunchColors.getColorName(raw).trim();
-        final display = name.isEmpty ? raw : name;
+      final colors = await databaseService.getCintaColors();
+      final map = <String, String>{
+        for (final color in BunchColors.defaultColors)
+          _normalizeText(color): BunchColors.getColorName(color),
+      };
+      for (final color in colors) {
+        final display = BunchColors.getColorName(color).trim();
+        if (display.isEmpty) continue;
         map[_normalizeText(display)] = display;
       }
       availableColors = map.values.toList()..sort((a, b) => a.compareTo(b));
     } catch (_) {
-      availableColors = const [];
+      availableColors = BunchColors.defaultColors;
     }
 
     // Sincronizar controles con filtros actuales

@@ -1,52 +1,100 @@
 import 'package:flutter/material.dart';
 
+import '../../core/database_provider.dart';
+
 /// Definición de colores de cinta para racimos
-/// Código numérico y nombre de color
+/// Basado en nombres (sin dependencia de códigos numéricos).
 class BunchColors {
-  static const Map<int, String> colorMap = {
-    7: 'Rojo',
-    8: 'Marrón',
-    12: 'Azul oscuro',
-    11: 'Verde',
-    10: 'Cian',
-  };
+  static const List<String> defaultColors = [
+    'Amarillo',
+    'Rojo',
+    'Marrón',
+    'Blanco',
+    'Negro',
+    'Morado',
+    'Azul',
+    'Verde',
+    'Naranja',
+  ];
 
   static const String white = 'Blanco';
 
-  static List<int> get codes => colorMap.keys.toList();
-
-  static String getColorName(String? colorCode) {
-    if (colorCode == null || colorCode.isEmpty) return '';
-    if (colorCode == white) return white;
-    try {
-      final code = int.parse(colorCode);
-      return colorMap[code] ?? colorCode;
-    } catch (e) {
-      return colorCode;
-    }
+  static String _normalizeKey(String raw) {
+    return raw
+        .toLowerCase()
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('ñ', 'n')
+        .trim();
   }
 
-  static Color getColorWidget(String? colorCode) {
-    if (colorCode == null || colorCode.isEmpty) return Colors.grey;
-    try {
-      final code = int.parse(colorCode);
-      switch (code) {
-        case 7:
-          return Colors.red;
-        case 8:
-          return Colors.brown;
-        case 12:
-          return Colors.blue.shade900;
-        case 11:
-          return Colors.green;
-        case 10:
-          return Colors.cyan;
-        default:
-          return Colors.grey;
-      }
-    } catch (e) {
-      if (colorCode == white) return Colors.white;
-      return Colors.grey;
+  static String _capitalizeWords(String raw) {
+    return raw
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) {
+      if (part.length == 1) return part.toUpperCase();
+      return '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}';
+    }).join(' ');
+  }
+
+  static String getColorName(String? colorValue) {
+    if (colorValue == null || colorValue.trim().isEmpty) return '';
+    final key = _normalizeKey(colorValue);
+    const canonical = {
+      'amarillo': 'Amarillo',
+      'rojo': 'Rojo',
+      'marron': 'Marrón',
+      'blanco': 'Blanco',
+      'negro': 'Negro',
+      'morado': 'Morado',
+      'azul': 'Azul',
+      'verde': 'Verde',
+      'naranja': 'Naranja',
+      'white': 'Blanco',
+      'black': 'Negro',
+      'brown': 'Marrón',
+      'purple': 'Morado',
+      'orange': 'Naranja',
+      'blue': 'Azul',
+      '7': 'Rojo',
+      '8': 'Marrón',
+      '10': 'Azul',
+      '11': 'Verde',
+      '12': 'Azul',
+      'azul oscuro': 'Azul',
+      'cian': 'Azul',
+    };
+    return canonical[key] ?? _capitalizeWords(colorValue);
+  }
+
+  static Color getColorWidget(String? colorValue) {
+    final colorName = getColorName(colorValue);
+    switch (colorName) {
+      case 'Amarillo':
+        return const Color.fromARGB(255, 246, 255, 0);
+      case 'Rojo':
+        return Colors.red;
+      case 'Marrón':
+        return Colors.brown;
+      case 'Blanco':
+        return Colors.white;
+      case 'Negro':
+        return Colors.black87;
+      case 'Morado':
+        return Colors.deepPurple;
+      case 'Azul':
+        return const Color.fromARGB(255, 0, 17, 255);
+      case 'Verde':
+        return const Color.fromARGB(255, 0, 128, 4);
+      case 'Naranja':
+        return Colors.orange;
+      default:
+        return Colors.grey;
     }
   }
 }
@@ -68,11 +116,44 @@ class ColorPickerWidget extends StatefulWidget {
 
 class _ColorPickerWidgetState extends State<ColorPickerWidget> {
   late String? _selectedColor;
+  List<String> _availableColors = BunchColors.defaultColors;
+
+  bool _isDarkColor(Color color) {
+    return ThemeData.estimateBrightnessForColor(color) == Brightness.dark;
+  }
+
+  Future<void> _loadCatalogColors() async {
+    final db = DatabaseProvider.of(context);
+    try {
+      final colors = await db.getCintaColors();
+      if (!mounted) return;
+      setState(() {
+        _availableColors = colors.isEmpty ? BunchColors.defaultColors : colors;
+        if (_selectedColor == null || _selectedColor!.trim().isEmpty) {
+          _selectedColor = _availableColors.first;
+          widget.onColorSelected(_selectedColor!);
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _availableColors = BunchColors.defaultColors;
+      });
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _selectedColor = widget.initialColor;
+    _selectedColor = BunchColors.getColorName(widget.initialColor);
+    if (_selectedColor != null && _selectedColor!.trim().isEmpty) {
+      _selectedColor = null;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _loadCatalogColors();
+      }
+    });
   }
 
   @override
@@ -87,48 +168,29 @@ class _ColorPickerWidgetState extends State<ColorPickerWidget> {
           spacing: 8,
           runSpacing: 8,
           children: [
-            // Opciones numéricas
-            ...BunchColors.codes.map((code) {
-              final name = BunchColors.colorMap[code]!;
-              final isSelected = _selectedColor == code.toString();
+            ..._availableColors.map((colorName) {
+              final isSelected = _selectedColor == colorName;
+              final color = BunchColors.getColorWidget(colorName);
               return FilterChip(
-                label: Text(name),
+                label: Text(colorName),
                 selected: isSelected,
-                backgroundColor: BunchColors.getColorWidget(code.toString()),
-                selectedColor: BunchColors.getColorWidget(code.toString()),
+                backgroundColor: color,
+                selectedColor: color,
+                side: BorderSide(
+                  color: colorName == BunchColors.white
+                      ? Colors.grey.shade500
+                      : Colors.transparent,
+                ),
                 labelStyle: TextStyle(
-                  color: isSelected ? Colors.white : Colors.black,
+                  color: _isDarkColor(color) ? Colors.white : Colors.black,
                   fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                 ),
                 onSelected: (_) {
-                  setState(() => _selectedColor = code.toString());
-                  widget.onColorSelected(code.toString());
+                  setState(() => _selectedColor = colorName);
+                  widget.onColorSelected(colorName);
                 },
               );
             }),
-            // Opción Blanco
-            FilterChip(
-              label: const Text('Blanco'),
-              selected: _selectedColor == BunchColors.white,
-              backgroundColor: Colors.white,
-              selectedColor: Colors.white70,
-              side: BorderSide(
-                color: _selectedColor == BunchColors.white
-                    ? Colors.blue
-                    : Colors.grey,
-                width: _selectedColor == BunchColors.white ? 2 : 1,
-              ),
-              labelStyle: TextStyle(
-                color: Colors.black,
-                fontWeight: _selectedColor == BunchColors.white
-                    ? FontWeight.bold
-                    : FontWeight.normal,
-              ),
-              onSelected: (_) {
-                setState(() => _selectedColor = BunchColors.white);
-                widget.onColorSelected(BunchColors.white);
-              },
-            ),
           ],
         ),
       ],

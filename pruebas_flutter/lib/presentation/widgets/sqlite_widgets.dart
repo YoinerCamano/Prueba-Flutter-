@@ -181,8 +181,14 @@ class BunchHistoryWidget extends StatelessWidget {
                                 : Colors.green),
                         child: Text(
                           '#$number',
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: _textColorForBackground(
+                              recusado
+                                  ? Colors.red
+                                  : (cintaColor.isNotEmpty
+                                      ? _parseColor(cintaColor)
+                                      : Colors.green),
+                            ),
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
                           ),
@@ -206,9 +212,41 @@ class BunchHistoryWidget extends StatelessWidget {
                         padding: EdgeInsets.zero,
                         visualDensity: VisualDensity.compact,
                       ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: synced
+                            ? Colors.green.withValues(alpha: 0.15)
+                            : Colors.orange.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: synced ? Colors.green : Colors.orange,
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            synced ? Icons.cloud_done : Icons.cloud_off,
+                            size: 12,
+                            color: synced ? Colors.green : Colors.orange,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            synced ? 'Sincronizado' : 'Pendiente',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: synced ? Colors.green : Colors.orange,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     const Spacer(),
-                    if (!synced)
-                      const Icon(Icons.cloud_off, size: 16, color: Colors.grey),
                   ],
                 ),
                 subtitle: Text(
@@ -239,26 +277,12 @@ class BunchHistoryWidget extends StatelessWidget {
   }
 
   Color _parseColor(String colorStr) {
-    // Mapear nombres o códigos de colores a Color
-    final colorMap = {
-      'rojo': Colors.red,
-      'marrón': Colors.brown,
-      'marron': Colors.brown,
-      'azul': Colors.blue,
-      'verde': Colors.green,
-      'amarillo': Colors.yellow,
-      'naranja': Colors.orange,
-      'morado': Colors.purple,
-      'rosa': Colors.pink,
-      'negro': Colors.black,
-      'blanco': Colors.white,
-    };
-    final lower = colorStr.toLowerCase();
-    if (colorMap.containsKey(lower)) {
-      return colorMap[lower]!;
-    }
-    // Probar con códigos numéricos de cinta
     return BunchColors.getColorWidget(colorStr);
+  }
+
+  Color _textColorForBackground(Color background) {
+    final brightness = ThemeData.estimateBrightnessForColor(background);
+    return brightness == Brightness.dark ? Colors.white : Colors.black;
   }
 
   Future<void> _deleteBunch(

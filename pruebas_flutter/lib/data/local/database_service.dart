@@ -8,15 +8,28 @@ import '../../domain/entities.dart';
 class DatabaseService {
   static const String _databaseName = 'pruebas_flutter.db';
   static const int _databaseVersion =
-  7; // + viajes de pesaje y numeracion por viaje
+  9; // + columna synced_at en pesaje para seguimiento de sincronización
 
   // Tablas
   static const String _cuadrillaTable = 'cuadrilla';
   static const String _operariosTable = 'operarios';
   static const String _basculaTable = 'bascula';
+  static const String _cintaTable = 'cinta';
   static const String _viajePesajeTable = 'viaje_pesaje';
   static const String _pesajeTable = 'pesaje';
   static const String _appSettingsTable = 'app_settings';
+
+  static const List<String> _defaultCintas = [
+    'Amarillo',
+    'Rojo',
+    'Marrón',
+    'Blanco',
+    'Negro',
+    'Morado',
+    'Azul',
+    'Verde',
+    'Naranja',
+  ];
 
   Database? _database;
 
@@ -73,10 +86,20 @@ class DatabaseService {
       await _migrateToJourneyModel(db);
       await _dropLegacyTablesIfUnused(db);
     }
+    if (oldVersion < 8) {
+      await _createCintaTable(db, ifNotExists: true);
+      await _seedDefaultCintas(db);
+      await _migrateLegacyColorCodes(db);
+    }
+    if (oldVersion < 9) {
+      await _addColumnIfMissing(db, _pesajeTable, 'synced_at', 'TEXT');
+    }
   }
 
   Future<void> _ensureSchema(Database db) async {
     await _createNormalizedSchema(db, ifNotExists: true);
+    await _createCintaTable(db, ifNotExists: true);
+    await _seedDefaultCintas(db);
     await _createAppSettingsTable(db, ifNotExists: true);
     await _addColumnIfMissing(db, _pesajeTable, 'recusado_desc', 'TEXT');
     await _addColumnIfMissing(
@@ -124,6 +147,9 @@ class DatabaseService {
         ubicacion TEXT
       )
     ''');
+
+    await _createCintaTable(db, ifNotExists: ifNotExists);
+    await _seedDefaultCintas(db);
 
     await db.execute('''
       CREATE TABLE ${ifClause}${_viajePesajeTable} (
@@ -210,6 +236,26 @@ class DatabaseService {
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_operario_nombre_unique ON $_operariosTable(lower(nombre_completo))');
     await _safeCreate(
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_bascula_nombre_unique ON $_basculaTable(lower(nombre))');
+  }
+
+  Future<void> _createCintaTable(DatabaseExecutor db,
+      {bool ifNotExists = false}) async {
+    final ifClause = ifNotExists ? 'IF NOT EXISTS ' : '';
+    await db.execute('''
+      CREATE TABLE ${ifClause}${_cintaTable} (
+        id_cinta INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL UNIQUE
+      )
+    ''');
+  }
+
+  Future<void> _seedDefaultCintas(DatabaseExecutor db) async {
+    for (final color in _defaultCintas) {
+      await db.rawInsert(
+        'INSERT OR IGNORE INTO $_cintaTable(nombre) VALUES (?)',
+        [color],
+      );
+    }
   }
 
   Future<void> _dropLegacyTablesIfUnused(DatabaseExecutor db) async {
@@ -314,6 +360,8 @@ class DatabaseService {
 
       await _createUniqueIndexes(txn);
       await _createJourneyIndexes(txn);
+      await _createCintaTable(txn, ifNotExists: true);
+      await _seedDefaultCintas(txn);
       await txn.execute('PRAGMA foreign_keys = ON');
     });
   }
@@ -327,6 +375,75 @@ class DatabaseService {
         v TEXT NOT NULL
       )
     ''');
+  }
+
+  Future<void> _migrateLegacyColorCodes(Database db) async {
+    await db.transaction((txn) async {
+      await _createCintaTable(txn, ifNotExists: true);
+      await _seedDefaultCintas(txn);
+
+      final viajes = await txn.query(
+        _viajePesajeTable,
+        columns: const ['id_viaje', 'color_cinta'],
+      );
+      for (final row in viajes) {
+        final idViaje = row['id_viaje'] as int;
+        final original = (row['color_cinta'] ?? '').toString();
+        final normalized = _normalizeColorText(original);
+        await _ensureCintaExists(txn, normalized);
+        if (normalized != original) {
+          await txn.update(
+            _viajePesajeTable,
+            {'color_cinta': normalized},
+            where: 'id_viaje = ?',
+            whereArgs: [idViaje],
+          );
+        }
+      }
+
+      final pesajes = await txn.query(
+        _pesajeTable,
+        columns: const ['id_pesaje', 'color_cinta'],
+      );
+      for (final row in pesajes) {
+        final idPesaje = row['id_pesaje'] as int;
+        final original = (row['color_cinta'] ?? '').toString();
+        if (original.trim().isEmpty) continue;
+        final normalized = _normalizeColorText(original);
+        await _ensureCintaExists(txn, normalized);
+        if (normalized != original) {
+          await txn.update(
+            _pesajeTable,
+            {'color_cinta': normalized},
+            where: 'id_pesaje = ?',
+            whereArgs: [idPesaje],
+          );
+        }
+      }
+
+      final preferredRows = await txn.query(
+        _appSettingsTable,
+        columns: const ['v'],
+        where: 'k = ?',
+        whereArgs: const ['preferred_color'],
+        limit: 1,
+      );
+      if (preferredRows.isNotEmpty) {
+        final original = (preferredRows.first['v'] ?? '').toString();
+        if (original.trim().isNotEmpty) {
+          final normalized = _normalizeColorText(original);
+          await _ensureCintaExists(txn, normalized);
+          if (normalized != original) {
+            await txn.update(
+              _appSettingsTable,
+              {'v': normalized},
+              where: 'k = ?',
+              whereArgs: const ['preferred_color'],
+            );
+          }
+        }
+      }
+    });
   }
 
   // ========== OPERACIONES ESQUEMA NORMALIZADO ==========
@@ -520,6 +637,39 @@ class DatabaseService {
     return Bascula.fromMap(res.first);
   }
 
+  Future<List<Map<String, dynamic>>> getCintas() async {
+    final db = await database;
+    return db.query(_cintaTable, orderBy: 'id_cinta ASC');
+  }
+
+  Future<List<String>> getCintaColors() async {
+    final rows = await getCintas();
+    return rows
+        .map((row) => (row['nombre'] ?? '').toString().trim())
+        .where((name) => name.isNotEmpty)
+        .toList();
+  }
+
+  Future<int> insertCintaColor(String nombre) async {
+    final db = await database;
+    final normalized = _normalizeColorText(nombre);
+    await db.rawInsert(
+      'INSERT OR IGNORE INTO $_cintaTable(nombre) VALUES (?)',
+      [normalized],
+    );
+    final rows = await db.query(
+      _cintaTable,
+      columns: const ['id_cinta'],
+      where: 'LOWER(nombre) = LOWER(?)',
+      whereArgs: [normalized],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw StateError('No fue posible insertar la cinta: $nombre');
+    }
+    return rows.first['id_cinta'] as int;
+  }
+
   Future<bool> _existsByName(
       Database db, String table, String column, String value) async {
     final res = await db.query(
@@ -532,32 +682,70 @@ class DatabaseService {
     return res.isNotEmpty;
   }
 
+  String _normalizeKey(String raw) {
+    return raw
+        .toLowerCase()
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('ñ', 'n')
+        .trim();
+  }
+
+  String _capitalizeWords(String raw) {
+    return raw
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) {
+      if (part.length == 1) return part.toUpperCase();
+      return '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}';
+    }).join(' ');
+  }
+
   String _normalizeColorText(String raw) {
-    final value = raw.trim().toLowerCase();
-    switch (value) {
-      case '7':
-      case 'rojo':
-        return 'rojo';
-      case '8':
-      case 'marron':
-      case 'marrón':
-        return 'marron';
-      case '12':
-      case 'azul':
-      case 'azul oscuro':
-        return 'azul';
-      case '11':
-      case 'verde':
-        return 'verde';
-      case '10':
-      case 'cian':
-        return 'cian';
-      case 'blanco':
-      case 'white':
-        return 'blanco';
-      default:
-        return value.isEmpty ? 'sin color' : value;
-    }
+    final key = _normalizeKey(raw);
+    if (key.isEmpty) return 'Sin color';
+
+    const canonical = {
+      'amarillo': 'Amarillo',
+      'rojo': 'Rojo',
+      'marron': 'Marrón',
+      'blanco': 'Blanco',
+      'negro': 'Negro',
+      'morado': 'Morado',
+      'azul': 'Azul',
+      'verde': 'Verde',
+      'naranja': 'Naranja',
+      'white': 'Blanco',
+      'black': 'Negro',
+      'brown': 'Marrón',
+      'purple': 'Morado',
+      'orange': 'Naranja',
+      'blue': 'Azul',
+      '7': 'Rojo',
+      '8': 'Marrón',
+      '10': 'Azul',
+      '11': 'Verde',
+      '12': 'Azul',
+      'azul oscuro': 'Azul',
+      'cian': 'Azul',
+    };
+
+    final mapped = canonical[key];
+    if (mapped != null) return mapped;
+    return _capitalizeWords(raw);
+  }
+
+  Future<void> _ensureCintaExists(DatabaseExecutor db, String colorName) async {
+    final normalized = _normalizeColorText(colorName);
+    if (normalized.trim().isEmpty || normalized == 'Sin color') return;
+    await db.rawInsert(
+      'INSERT OR IGNORE INTO $_cintaTable(nombre) VALUES (?)',
+      [normalized],
+    );
   }
 
   Future<int> crearViajePesaje({
@@ -581,13 +769,16 @@ class DatabaseService {
         throw StateError('Ya existe un viaje abierto para esta bascula');
       }
 
+      final normalizedColor = _normalizeColorText(colorCinta);
+      await _ensureCintaExists(txn, normalizedColor);
+
       return txn.insert(_viajePesajeTable, {
         'id_cuadrilla': idCuadrilla,
         'id_bascula': idBascula,
         'fecha_inicio': (fechaInicio ?? DateTime.now()).toIso8601String(),
         'fecha_fin': null,
         'estado': 'abierto',
-        'color_cinta': _normalizeColorText(colorCinta),
+        'color_cinta': normalizedColor,
         'lote': lote.trim().isEmpty ? 'sin lote' : lote.trim().toLowerCase(),
         'observacion': (observacion ?? '').trim().isEmpty
             ? null
@@ -683,6 +874,11 @@ class DatabaseService {
         idViaje: idViaje,
       );
 
+      final normalizedColor = _normalizeColorText(
+        colorCinta ?? (viajeActivo['color_cinta'] ?? 'Sin color').toString(),
+      );
+      await _ensureCintaExists(txn, normalizedColor);
+
       return txn.insert(_pesajeTable, {
         'id_viaje': idViaje,
         'numero_racimo': numeroRacimo,
@@ -692,9 +888,7 @@ class DatabaseService {
         'peso': peso,
         'unidad': unidad,
         'fecha_hora': fechaHora.toIso8601String(),
-        'color_cinta': _normalizeColorText(
-          colorCinta ?? (viajeActivo['color_cinta'] ?? 'sin color').toString(),
-        ),
+        'color_cinta': normalizedColor,
         'lote': lote ?? viajeActivo['lote'],
         'recusado': recusado ? 1 : 0,
         'recusado_desc':
@@ -833,6 +1027,8 @@ class DatabaseService {
             : 'sin lote',
       });
 
+      await _ensureCintaExists(txn, (cintaColor ?? '').trim());
+
       return txn.insert(_pesajeTable, {
         'id_viaje': idViaje,
         'numero_racimo': number > 0 ? number : 1,
@@ -863,8 +1059,12 @@ class DatabaseService {
     final updates = <String, dynamic>{};
 
     if (cintaColor != null) {
-      updates['color_cinta'] =
+      final normalizedColor =
           cintaColor.trim().isEmpty ? null : _normalizeColorText(cintaColor);
+      updates['color_cinta'] = normalizedColor;
+      if (normalizedColor != null) {
+        await _ensureCintaExists(db, normalizedColor);
+      }
     }
     if (lote != null) {
       updates['lote'] = lote.trim().isEmpty ? null : lote.trim();
@@ -914,6 +1114,7 @@ class DatabaseService {
     final db = await database;
     final rows = await db.rawQuery('''
       SELECT p.id_pesaje, p.id_viaje, p.numero_racimo, p.peso, p.unidad, p.fecha_hora, p.color_cinta, p.lote, p.recusado,
+             p.synced_at,
               p.recusado_desc,
              v.estado AS viaje_estado,
              c.nombre AS cuadrilla_nombre,
@@ -949,7 +1150,9 @@ class DatabaseService {
               'recusado': r['recusado'] ?? 0,
               'recusadoDesc': r['recusado_desc'] ?? '',
               'createdAt': r['fecha_hora'],
-              'syncedToFirebase': 0,
+              'syncedAt': r['synced_at'],
+              'synced': (r['synced_at'] != null) ? 1 : 0,
+              'syncedToFirebase': (r['synced_at'] != null) ? 1 : 0,
             })
         .toList();
   }
@@ -1175,13 +1378,51 @@ class DatabaseService {
     // Obsoleto respecto al nuevo esquema
   }
 
+  /// Marca un pesaje como sincronizado con la fecha/hora actual.
   Future<void> markAsSynced(int id) async {
-    // Obsoleto respecto al nuevo esquema
+    final db = await database;
+    await db.update(
+      _pesajeTable,
+      {'synced_at': DateTime.now().toIso8601String()},
+      where: 'id_pesaje = ?',
+      whereArgs: [id],
+    );
   }
 
+  /// Marca múltiples pesajes como sincronizados en una transacción.
+  Future<void> markBatchAsSynced(List<int> ids) async {
+    if (ids.isEmpty) return;
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    await db.transaction((txn) async {
+      for (final id in ids) {
+        await txn.update(
+          _pesajeTable,
+          {'synced_at': now},
+          where: 'id_pesaje = ?',
+          whereArgs: [id],
+        );
+      }
+    });
+  }
+
+  /// Devuelve los pesajes pendientes de sincronización (synced_at IS NULL).
   Future<List<Map<String, dynamic>>> getUnsyncedBunches() async {
-    // Obsoleto respecto al nuevo esquema
-    return [];
+    final db = await database;
+    return db.query(
+      _pesajeTable,
+      where: 'synced_at IS NULL',
+      orderBy: 'fecha_hora ASC',
+    );
+  }
+
+  /// Cuenta los pesajes pendientes de sincronización.
+  Future<int> countUnsyncedBunches() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as cnt FROM $_pesajeTable WHERE synced_at IS NULL',
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 
   /// Cierra la base de datos.

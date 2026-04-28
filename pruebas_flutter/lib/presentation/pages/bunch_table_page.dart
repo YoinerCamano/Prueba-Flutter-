@@ -210,6 +210,7 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
   final _loteCtrl = TextEditingController();
 
   List<String> _lastColors = const [];
+  List<String> _catalogColors = List<String>.from(BunchColors.defaultColors);
   List<String> _lastCuadrillas = const [];
   List<String> _lastLotes = const [];
 
@@ -231,8 +232,20 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
         .trim();
   }
 
+  Color _textColorForBackground(Color background) {
+    final brightness = ThemeData.estimateBrightnessForColor(background);
+    return brightness == Brightness.dark ? Colors.white : Colors.black;
+  }
+
   List<String> _buildColorOptions(List<Map<String, dynamic>> source) {
     final map = <String, String>{};
+
+    for (final color in _catalogColors) {
+      final display = BunchColors.getColorName(color).trim();
+      if (display.isEmpty) continue;
+      map[_normalizeText(display)] = display;
+    }
+
     for (final d in source) {
       final raw = (d['cintaColor'] ?? '').toString().trim();
       if (raw.isEmpty) continue;
@@ -401,10 +414,39 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
     );
   }
 
+  bool _colorsLoaded = false;
+
   @override
   void initState() {
     super.initState();
     _setDefaultDateRange();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_colorsLoaded) {
+      _colorsLoaded = true;
+      _loadCatalogColors();
+    }
+  }
+
+  Future<void> _loadCatalogColors() async {
+    final db = DatabaseProvider.of(context);
+    try {
+      final colors = await db.getCintaColors();
+      if (!mounted) return;
+      setState(() {
+        _catalogColors = colors.isEmpty
+            ? List<String>.from(BunchColors.defaultColors)
+            : colors;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _catalogColors = List<String>.from(BunchColors.defaultColors);
+      });
+    }
   }
 
   @override
@@ -693,6 +735,8 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                   final lote = d['lote'] as String?;
                   final recusado = (d['recusado'] == 1);
                   final recusadoDesc = d['recusadoDesc'] as String?;
+                    final synced =
+                      (d['syncedToFirebase'] ?? d['synced'] ?? 0) == 1;
 
                   return Card(
                     child: Padding(
@@ -702,11 +746,75 @@ class _BunchEntriesListState extends State<_BunchEntriesList> {
                         children: [
                           Row(
                             children: [
-                              Text('#$number',
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold)),
+                              Builder(builder: (context) {
+                                final badgeColor = cintaColor == null ||
+                                        cintaColor.trim().isEmpty
+                                    ? Colors.green
+                                    : BunchColors.getColorWidget(cintaColor);
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: badgeColor,
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color: badgeColor == Colors.white
+                                          ? Colors.grey.shade500
+                                          : Colors.transparent,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    '#$number',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _textColorForBackground(badgeColor),
+                                    ),
+                                  ),
+                                );
+                              }),
                               const SizedBox(width: 12),
                               Text('Peso: ${weightKg.toStringAsFixed(2)} $unit'),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: synced
+                                      ? Colors.green.withValues(alpha: 0.15)
+                                      : Colors.orange.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(999),
+                                  border: Border.all(
+                                    color:
+                                        synced ? Colors.green : Colors.orange,
+                                    width: 0.8,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      synced
+                                          ? Icons.cloud_done
+                                          : Icons.cloud_off,
+                                      size: 12,
+                                      color: synced
+                                          ? Colors.green
+                                          : Colors.orange,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      synced ? 'Sincronizado' : 'Pendiente',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                        color: synced
+                                            ? Colors.green
+                                            : Colors.orange,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                               const Spacer(),
                               Text(
                                 formatWeighingTime(weighingTime),

@@ -3,7 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import 'package:intl/intl.dart';
+
 import '../../core/database_provider.dart';
+import '../../core/sync/sync_config.dart';
+import '../../core/sync/sync_cubit.dart';
+import '../../core/sync/sync_service.dart';
 import '../../data/local/database_service.dart';
 import '../../domain/entities.dart';
 import '../blocs/connection/connection_bloc.dart' as conn;
@@ -24,11 +29,13 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   bool _savingCuadrilla = false;
   bool _savingOperario = false;
   bool _savingBascula = false;
+  bool _savingCinta = false;
   bool _savingSaveRules = false;
   String? _pendingUnitChange;
   String? _cuadrillaError;
   String? _operarioError;
   String? _basculaError;
+  String? _cintaError;
 
   // Datos
   String? _currentUnit;
@@ -39,6 +46,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   List<Cuadrilla> _cuadrillas = [];
   List<Operario> _operarios = [];
   List<Bascula> _basculas = [];
+  List<String> _cintas = [];
   int? _selectedCuadrillaId;
   bool _catalogsLoaded = false;
 
@@ -47,6 +55,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   final _operarioNombreCtrl = TextEditingController();
   final _basculaNombreCtrl = TextEditingController();
   final _basculaUbicacionCtrl = TextEditingController();
+  final _cintaCtrl = TextEditingController();
   final _minimumSaveWeightCtrl = TextEditingController();
   final _unloadThresholdCtrl = TextEditingController();
 
@@ -57,6 +66,8 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   // Referencia al BLoC para dispose
   late final conn.ConnectionBloc _connectionBloc;
   DatabaseService? _databaseService;
+  SyncService? _syncService;
+  SyncCubit? _syncCubit;
   DatabaseService get _db {
     final db = _databaseService;
     if (db == null) {
@@ -71,22 +82,19 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
     _connectionBloc = context.read<conn.ConnectionBloc>();
     _connectionBloc.add(conn.StopPolling());
-
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (mounted) {
-        unawaited(_loadCurrentUnit());
-      }
-    });
   }
 
   @override
   void dispose() {
     _blocSubscription?.cancel();
     _timeoutTimer?.cancel();
+    _syncCubit?.close();
+    _syncService?.dispose();
     _cuadrillaCtrl.dispose();
     _operarioNombreCtrl.dispose();
     _basculaNombreCtrl.dispose();
     _basculaUbicacionCtrl.dispose();
+    _cintaCtrl.dispose();
     _minimumSaveWeightCtrl.dispose();
     _unloadThresholdCtrl.dispose();
     _connectionBloc.add(conn.StartPolling());
@@ -101,6 +109,11 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     _databaseService ??= DatabaseProvider.of(context);
     if (wasNull && mounted) {
       unawaited(_loadCurrentUnit());
+      final syncService = SyncService(db: _databaseService!);
+      final syncCubit = SyncCubit(syncService);
+      _syncService = syncService;
+      _syncCubit = syncCubit;
+      unawaited(syncCubit.initialize());
     }
 
     // Cargar catálogos solo una vez cuando el provider ya existe.
@@ -294,7 +307,21 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       _loadCuadrillas(),
       _loadOperarios(),
       _loadBasculas(),
+      _loadCintas(),
     ]);
+  }
+
+  Future<void> _loadCintas() async {
+    final db = _databaseService;
+    if (db == null) return;
+    try {
+      final colors = await db.getCintaColors();
+      setState(() {
+        _cintas = colors;
+      });
+    } catch (_) {
+      // ignore
+    }
   }
 
   void _changeUnit(String targetUnit) {
@@ -351,6 +378,16 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     }
     setState(() => _basculaError = null);
     await _saveBascula();
+  }
+
+  Future<void> _handleSaveCinta() async {
+    final nombre = _cintaCtrl.text.trim();
+    if (nombre.isEmpty) {
+      setState(() => _cintaError = 'Ingresa un color de cinta');
+      return;
+    }
+    setState(() => _cintaError = null);
+    await _saveCinta();
   }
 
   Future<void> _confirmSendZero() async {
@@ -507,6 +544,44 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                               setState(() => _selectedCuadrillaId = id),
                         ),
                         const SizedBox(height: 16),
+                        _TapeColorsCard(
+                          cintaCtrl: _cintaCtrl,
+                          cintas: _cintas,
+                          savingCinta: _savingCinta,
+                          cintaError: _cintaError,
+                          onCintaChanged: (_) {
+                            if (_cintaError != null) {
+                              setState(() => _cintaError = null);
+                            }
+                          },
+                          onSaveCinta: _handleSaveCinta,
+                        ),
+                        const SizedBox(height: 16),
+                        if (_syncCubit != null)
+                          BlocProvider<SyncCubit>.value(
+                            value: _syncCubit!,
+                            child: const _SyncConfigCard(),
+                          )
+                        else
+                          const Card(
+                            child: Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Row(
+                                children: [
+                                  SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text('Inicializando sincronización...'),
+                                ],
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 16),
                         _ActionCard(
                           title: 'Restablecer báscula',
                           subtitle: 'Restablece la báscula a cero.',
@@ -537,6 +612,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                       cuadrillas: _cuadrillas,
                       operarios: _operarios,
                       basculas: _basculas,
+                      cintas: _cintas,
                       onEditCuadrilla: _editCuadrilla,
                       onDeleteCuadrilla: _deleteCuadrilla,
                       onEditOperario: _editOperario,
@@ -652,6 +728,25 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       }
     } finally {
       if (mounted) setState(() => _savingBascula = false);
+    }
+  }
+
+  Future<void> _saveCinta() async {
+    final nombre = _cintaCtrl.text.trim();
+    if (nombre.isEmpty) {
+      _showMessage('Ingresa un color de cinta', isError: true);
+      return;
+    }
+    setState(() => _savingCinta = true);
+    try {
+      await _db.insertCintaColor(nombre);
+      _cintaCtrl.clear();
+      await _loadCintas();
+      _showMessage('Color de cinta agregado');
+    } catch (e) {
+      _showMessage('Error al guardar color de cinta: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _savingCinta = false);
     }
   }
 
@@ -1520,6 +1615,7 @@ class _CatalogList extends StatelessWidget {
   final List<Cuadrilla> cuadrillas;
   final List<Operario> operarios;
   final List<Bascula> basculas;
+  final List<String> cintas;
   final Function(Cuadrilla) onEditCuadrilla;
   final Function(Cuadrilla) onDeleteCuadrilla;
   final Function(Operario) onEditOperario;
@@ -1532,6 +1628,7 @@ class _CatalogList extends StatelessWidget {
     required this.cuadrillas,
     required this.operarios,
     required this.basculas,
+    required this.cintas,
     required this.onEditCuadrilla,
     required this.onDeleteCuadrilla,
     required this.onEditOperario,
@@ -1701,6 +1798,21 @@ class _CatalogList extends StatelessWidget {
                         .toList(),
                   ),
           ),
+          const SizedBox(height: 12),
+          _buildSection(
+            context,
+            title: 'Cintas',
+            icon: Icons.color_lens,
+            child: cintas.isEmpty
+                ? const Text('No hay colores de cinta guardados')
+                : Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: cintas
+                        .map((c) => Chip(label: Text(c)))
+                        .toList(),
+                  ),
+          ),
         ],
       ),
     );
@@ -1745,5 +1857,452 @@ class _CatalogList extends StatelessWidget {
       parts.add('Ubicacion: ${b.ubicacion}');
     }
     return parts.isEmpty ? 'Sin datos adicionales' : parts.join(' • ');
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SYNC CONFIG CARD
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _SyncConfigCard extends StatelessWidget {
+  const _SyncConfigCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return BlocBuilder<SyncCubit, SyncState>(
+      builder: (context, state) {
+        final cubit = context.read<SyncCubit>();
+        final config = state.config;
+        final result = state.syncResult;
+        final isSyncing = result.status == SyncStatus.syncing;
+        final fmt = DateFormat('dd/MM/yyyy HH:mm');
+
+        return Card(
+          elevation: 0,
+          color: colorScheme.surfaceContainer,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Encabezado
+                Row(
+                  children: [
+                    Icon(Icons.sync, color: colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Sincronización de datos',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                Text(
+                  'Configura cómo y cuándo se sincronizan los registros locales.',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: colorScheme.onSurfaceVariant),
+                ),
+                const Divider(height: 24),
+
+                // ── Switch sincronización automática ──
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Sincronización automática'),
+                  subtitle: const Text(
+                      'Sincroniza periódicamente los registros pendientes'),
+                  value: config.autoSyncEnabled,
+                  onChanged: (v) => cubit.updateConfig(
+                      config.copyWith(autoSyncEnabled: v)),
+                ),
+
+                // ── Selector de intervalo ──
+                AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 200),
+                  crossFadeState: config.autoSyncEnabled
+                      ? CrossFadeState.showFirst
+                      : CrossFadeState.showSecond,
+                  firstChild: Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: DropdownButtonFormField<SyncInterval>(
+                      value: config.interval,
+                      decoration: const InputDecoration(
+                        labelText: 'Intervalo de sincronización',
+                        border: OutlineInputBorder(),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      items: SyncInterval.values
+                          .map((i) => DropdownMenuItem(
+                                value: i,
+                                child: Text(i.label),
+                              ))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v != null) {
+                          cubit.updateConfig(config.copyWith(interval: v));
+                        }
+                      },
+                    ),
+                  ),
+                  secondChild: const SizedBox.shrink(),
+                ),
+
+                // ── Switch solo WiFi ──
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Solo por WiFi'),
+                  subtitle:
+                      const Text('No sincronizar usando datos móviles'),
+                  value: config.wifiOnly,
+                  onChanged: (v) =>
+                      cubit.updateConfig(config.copyWith(wifiOnly: v)),
+                ),
+
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'API actual: ${state.apiConfig.baseUrl}${state.apiConfig.endpoint}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => _showApiConfigDialog(
+                        context,
+                        cubit,
+                        state.apiConfig,
+                      ),
+                      icon: const Icon(Icons.settings_ethernet),
+                      label: const Text('Configurar API'),
+                    ),
+                  ],
+                ),
+
+                const Divider(height: 16),
+
+                // ── Estado y estadísticas ──
+                _SyncStatusRow(
+                  config: config,
+                  pendingCount: state.pendingCount,
+                  result: result,
+                  lastSuccessAt:
+                      result.lastSyncAt != null ? fmt.format(result.lastSyncAt!) : null,
+                ),
+
+                const SizedBox(height: 12),
+
+                // ── Botón Sincronizar ahora ──
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: isSyncing ? null : () => cubit.syncNow(),
+                    icon: isSyncing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.cloud_sync_outlined),
+                    label: Text(
+                        isSyncing ? 'Sincronizando…' : 'Sincronizar ahora'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SyncStatusRow extends StatelessWidget {
+  final SyncConfig config;
+  final int pendingCount;
+  final SyncResult result;
+  final String? lastSuccessAt;
+
+  const _SyncStatusRow({
+    required this.config,
+    required this.pendingCount,
+    required this.result,
+    this.lastSuccessAt,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    Color statusColor;
+    IconData statusIcon;
+    String statusText;
+
+    switch (result.status) {
+      case SyncStatus.idle:
+        statusColor = colorScheme.onSurfaceVariant;
+        statusIcon = Icons.info_outline;
+        statusText = 'Sin sincronizar';
+      case SyncStatus.syncing:
+        statusColor = colorScheme.primary;
+        statusIcon = Icons.sync;
+        statusText = 'Sincronizando…';
+      case SyncStatus.success:
+        statusColor = Colors.green;
+        statusIcon = Icons.check_circle_outline;
+        statusText = result.syncedCount > 0
+            ? 'Sincronizados ${result.syncedCount} registro(s)'
+            : 'Todo al día';
+      case SyncStatus.error:
+        statusColor = colorScheme.error;
+        statusIcon = Icons.error_outline;
+        statusText = result.errorMessage ?? 'Error de sincronización';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Registros pendientes
+        Row(
+          children: [
+            Icon(
+              pendingCount > 0
+                  ? Icons.pending_actions
+                  : Icons.task_alt,
+              size: 16,
+              color: pendingCount > 0
+                  ? colorScheme.secondary
+                  : Colors.green,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              pendingCount > 0
+                  ? '$pendingCount registro(s) pendiente(s) de sincronizar'
+                  : 'No hay registros pendientes',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        // Última sincronización
+        if (lastSuccessAt != null)
+          Row(
+            children: [
+              Icon(Icons.access_time, size: 16,
+                  color: colorScheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Text(
+                'Última sincronización: $lastSuccessAt',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        const SizedBox(height: 4),
+        // Estado actual
+        Row(
+          children: [
+            Icon(statusIcon, size: 16, color: statusColor),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                statusText,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: statusColor),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Icon(
+              Icons.schedule,
+              size: 16,
+              color: colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                config.autoSyncEnabled
+                    ? 'Si falla, reintenta en el próximo ciclo (${config.interval.label}).'
+                    : 'Reintento automático desactivado. Solo reintenta al sincronizar manualmente.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: colorScheme.onSurfaceVariant),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+Future<void> _showApiConfigDialog(
+  BuildContext context,
+  SyncCubit cubit,
+  ApiSyncConfig current,
+) async {
+  final baseUrlCtrl = TextEditingController(text: current.baseUrl);
+  final endpointCtrl = TextEditingController(text: current.endpoint);
+  final tokenCtrl = TextEditingController(text: current.token);
+
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text('Configurar API de sincronización'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: baseUrlCtrl,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Base URL',
+                  hintText: 'http://192.168.0.49:8000',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: endpointCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Endpoint',
+                  hintText: '/sync/pesajes',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: tokenCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Token (opcional)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final updated = current.copyWith(
+                baseUrl: baseUrlCtrl.text.trim(),
+                endpoint: endpointCtrl.text.trim(),
+                token: tokenCtrl.text.trim(),
+              );
+              await cubit.updateApiConfig(updated);
+              if (dialogContext.mounted) {
+                Navigator.of(dialogContext).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Configuración API guardada')),
+                );
+              }
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
+class _TapeColorsCard extends StatelessWidget {
+  final TextEditingController cintaCtrl;
+  final List<String> cintas;
+  final bool savingCinta;
+  final String? cintaError;
+  final ValueChanged<String> onCintaChanged;
+  final VoidCallback onSaveCinta;
+
+  const _TapeColorsCard({
+    required this.cintaCtrl,
+    required this.cintas,
+    required this.savingCinta,
+    required this.cintaError,
+    required this.onCintaChanged,
+    required this.onSaveCinta,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      color: colorScheme.surfaceContainer,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SectionHeader(
+              title: 'Colores de cinta',
+              subtitle: 'Agrega colores para el selector de racimos.',
+              icon: Icons.color_lens,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: cintaCtrl,
+                    onChanged: onCintaChanged,
+                    decoration: InputDecoration(
+                      labelText: 'Nuevo color',
+                      errorText: cintaError,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: savingCinta ? null : onSaveCinta,
+                  icon: savingCinta
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.add),
+                  label: const Text('Agregar'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (cintas.isEmpty)
+              const Text('No hay colores registrados.')
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: cintas.map((c) => Chip(label: Text(c))).toList(),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
